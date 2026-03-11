@@ -24,7 +24,10 @@
       "Bash(findstr \":5173\")",
       "Bash(findstr \":5174\")",
       "Bash(taskkill /F /IM nodejs.exe /T)",
-      "Bash(curl -s http://localhost:5173)"
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(ping -c 2 github.com)",
+      "Bash(ping -n 2 github.com)",
+      "Bash(findstr \"7890 10809 10808\")"
     ]
   }
 }
