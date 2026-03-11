@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install -e .)",
+      "Bash(nanobot gateway)",
+      "Bash(git clone https://github.com/qingchencloud/clawpanel.git /tmp/clawpanel)",
+      "Bash(git clone --depth=1 https://github.com/qingchencloud/clawpanel.git /tmp/clawpanel3)",
+      "Bash(pip install -e . --quiet)",
+      "Bash(npm install --silent)",
+      "Bash(findstr \":3000\")",
+      "Bash(taskkill /F /PID 43592 /T)",
+      "Bash(taskkill /F /PID 155608 /T)",
+      "Bash(findstr \":5173 :5174 :5175\")",
+      "Bash(taskkill /F /PID 172568 /T)",
+      "Bash(taskkill /F /PID 94848 /T)",
+      "Bash(findstr \"LISTENING\")",
+      "Bash(findstr \":5173 :5174 :5175 :5176\")",
+      "Bash(taskkill /F /IM node.exe /T)",
+      "Bash(timeout 1)",
+      "Bash(wmic process where \"ProcessId=155608 or ProcessId=172568 or ProcessId=94848 or ProcessId=117076\" get ProcessId,Name,CommandLine)",
+      "Bash(for pid in 155608 172568 94848 117076)",
+      "Bash(do taskkill /F /PID $pid /T)",
+      "Bash(done)",
+      "Bash(findstr \":5173\")",
+      "Bash(findstr \":5174\")",
+      "Bash(taskkill /F /IM nodejs.exe /T)",
+      "Bash(curl -s http://localhost:5173)"
+    ]
+  }
+}

@@ -21,3 +21,25 @@ poetry.lock
 .pytest_cache/
 botpy.log
 
+# Node.js / npm
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+*.log
+
+# Dashboard frontend build artifacts
+nanobot/web/dashboard/node_modules/
+nanobot/web/dashboard/dist/
+nanobot/web/dashboard/.vite/
+nanobot/web/dashboard/.turbo/
+
+# Dashboard static build output (built assets)
+nanobot/web/static/dashboard/
+
+# TypeScript
+*.tsbuildinfo
+
+# Environment files
+.env.local
+.env.*.local

@@ -400,6 +400,13 @@ def gateway(
     # Create channel manager
     channels = ChannelManager(config, bus)
 
+    # Configure WebChannel with service references for API access
+    channels.set_web_channel_services(
+        agent_loop=agent,
+        session_manager=session_manager,
+        cron_service=cron
+    )
+
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
         enabled = set(channels.enabled_channels)
@@ -771,6 +778,15 @@ def channels_status():
         em_config
     )
 
+    # Web
+    web = config.channels.web
+    web_config = f"http://{web.host}:{web.port}" if web.enabled else "[dim]not configured[/dim]"
+    table.add_row(
+        "Web",
+        "✓" if web.enabled else "✗",
+        web_config
+    )
+
     console.print(table)
 
 
@@ -983,6 +999,78 @@ def _login_github_copilot() -> None:
         console.print("[green]✓ Authenticated with GitHub Copilot[/green]")
     except Exception as e:
         console.print(f"[red]Authentication error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+# ============================================================================
+# Dashboard Commands
+# ============================================================================
+
+dashboard_app = typer.Typer(help="Manage web dashboard")
+app.add_typer(dashboard_app, name="dashboard")
+
+
+@dashboard_app.command("build")
+def dashboard_build():
+    """Build the web dashboard frontend."""
+    import sys
+    from pathlib import Path
+
+    # Import build script
+    build_script = Path(__file__).parent.parent / "web" / "build_dashboard.py"
+
+    if not build_script.exists():
+        console.print("[red]Error: Build script not found at {build_script}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        import subprocess
+        console.print("{emoji} Building dashboard...", emoji="🔨")
+
+        # Run the build script
+        result = subprocess.run(
+            [sys.executable, str(build_script)],
+            check=True
+        )
+
+        console.print(f"[green]✓ Dashboard built successfully![/green]")
+        console.print("\nStart the gateway to access the dashboard:")
+        console.print("  [cyan]nanobot gateway[/cyan]")
+        console.print("\nThen open your browser to:")
+        console.print("  [cyan]http://localhost:8080/dashboard[/cyan]")
+
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Build failed: {e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@dashboard_app.command("dev")
+def dashboard_dev():
+    """Start the dashboard development server (requires npm)."""
+    import subprocess
+
+    dashboard_dir = Path(__file__).parent.parent / "web" / "dashboard"
+
+    if not dashboard_dir.exists():
+        console.print("[red]Error: Dashboard directory not found[/red]")
+        raise typer.Exit(1)
+
+    try:
+        console.print("{emoji} Starting dashboard dev server...", emoji="🚀")
+        console.print("Press Ctrl+C to stop\n")
+
+        subprocess.run(
+            ["npm", "run", "dev"],
+            cwd=dashboard_dir,
+            check=True
+        )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Dev server stopped[/yellow]")
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Failed to start dev server: {e}[/red]")
         raise typer.Exit(1)
 
 

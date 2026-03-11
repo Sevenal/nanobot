@@ -200,6 +200,21 @@ class QQConfig(Base):
     )  # Allowed user openids (empty = public access)
 
 
+class WebConfig(Base):
+    """Web UI channel configuration."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"  # Web server host
+    port: int = 8080  # Web server port
+    allow_from: list[str] = Field(
+        default_factory=list
+    )  # Allowed user IDs (empty = public access for web)
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:8080", "http://127.0.0.1:8080"]
+    )  # CORS allowed origins
+    auth_token: str = ""  # Optional auth token for API access
+
+
 
 
 class ChannelsConfig(Base):
@@ -217,6 +232,7 @@ class ChannelsConfig(Base):
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
 
 class AgentDefaults(Base):

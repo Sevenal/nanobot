@@ -150,7 +150,30 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Matrix channel not available: {}", e)
 
+        # Web channel
+        if self.config.channels.web.enabled:
+            try:
+                from nanobot.channels.web import WebChannel
+                self.channels["web"] = WebChannel(
+                    self.config.channels.web, self.bus
+                )
+                logger.info("Web channel enabled")
+            except ImportError as e:
+                logger.warning("Web channel not available: {}", e)
+
         self._validate_allow_from()
+
+    def set_web_channel_services(
+        self,
+        agent_loop: Any = None,
+        session_manager: Any = None,
+        cron_service: Any = None
+    ) -> None:
+        """Set service references for WebChannel API access."""
+        web_channel = self.channels.get("web")
+        if web_channel and hasattr(web_channel, "set_services"):
+            web_channel.set_services(agent_loop, session_manager, cron_service)
+            logger.info("WebChannel services configured")
 
     def _validate_allow_from(self) -> None:
         for name, ch in self.channels.items():
