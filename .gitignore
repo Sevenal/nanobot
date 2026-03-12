@@ -35,9 +35,6 @@ nanobot/web/dashboard/dist/
 nanobot/web/dashboard/.vite/
 nanobot/web/dashboard/.turbo/
 
-# Dashboard static build output (built assets)
-nanobot/web/static/dashboard/
-
 # TypeScript
 *.tsbuildinfo
 

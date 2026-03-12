@@ -18,6 +18,9 @@ export interface Message {
   content: string;
   timestamp?: string;
   tool_calls?: ToolCall[];
+  // Tool result message fields
+  tool_call_id?: string;
+  name?: string;  // Tool name for result messages
 }
 
 export interface ToolCall {

@@ -1,6 +1,7 @@
 """Base channel interface for chat platforms."""
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any
 
 from loguru import logger
@@ -30,6 +31,11 @@ class BaseChannel(ABC):
         self.config = config
         self.bus = bus
         self._running = False
+        # Message statistics
+        self._messages_sent = 0
+        self._messages_received = 0
+        self._last_activity: datetime | None = None
+        self._last_error: str | None = None
 
     @abstractmethod
     async def start(self) -> None:
@@ -109,6 +115,30 @@ class BaseChannel(ABC):
         )
 
         await self.bus.publish_inbound(msg)
+
+        # Update statistics
+        self._messages_received += 1
+        self._last_activity = datetime.now()
+        self._last_error = None  # Clear error on successful receive
+
+    async def _track_sent(self) -> None:
+        """Track a successfully sent message."""
+        self._messages_sent += 1
+        self._last_activity = datetime.now()
+        self._last_error = None  # Clear error on successful send
+
+    def _track_error(self, error: str) -> None:
+        """Track an error that occurred."""
+        self._last_error = error
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get channel statistics."""
+        return {
+            "messages_sent": self._messages_sent,
+            "messages_received": self._messages_received,
+            "last_activity": self._last_activity.isoformat() if self._last_activity else None,
+            "error": self._last_error,
+        }
 
     @property
     def is_running(self) -> bool:

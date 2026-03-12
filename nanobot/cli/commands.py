@@ -404,7 +404,8 @@ def gateway(
     channels.set_web_channel_services(
         agent_loop=agent,
         session_manager=session_manager,
-        cron_service=cron
+        cron_service=cron,
+        subagent_manager=agent.subagents
     )
 
     def _pick_heartbeat_target() -> tuple[str, str]:
@@ -1037,7 +1038,7 @@ def dashboard_build():
         console.print("\nStart the gateway to access the dashboard:")
         console.print("  [cyan]nanobot gateway[/cyan]")
         console.print("\nThen open your browser to:")
-        console.print("  [cyan]http://localhost:8080/dashboard[/cyan]")
+        console.print("  [cyan]http://localhost:8080/[/cyan]")
 
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Build failed: {e}[/red]")

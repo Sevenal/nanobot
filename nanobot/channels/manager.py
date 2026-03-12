@@ -178,12 +178,13 @@ class ChannelManager:
         self,
         agent_loop: Any = None,
         session_manager: Any = None,
-        cron_service: Any = None
+        cron_service: Any = None,
+        subagent_manager: Any = None
     ) -> None:
         """Set service references for WebChannel API access."""
         web_channel = self.channels.get("web")
         if web_channel and hasattr(web_channel, "set_services"):
-            web_channel.set_services(agent_loop, session_manager, cron_service)
+            web_channel.set_services(agent_loop, session_manager, cron_service, self, subagent_manager)
             logger.info("WebChannel services configured")
 
     def _validate_allow_from(self) -> None:
@@ -279,7 +280,8 @@ class ChannelManager:
         return {
             name: {
                 "enabled": True,
-                "running": channel.is_running
+                "running": channel.is_running,
+                **channel.get_stats()
             }
             for name, channel in self.channels.items()
         }

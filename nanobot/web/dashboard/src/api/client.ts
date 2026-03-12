@@ -13,7 +13,6 @@ import type {
 } from './types';
 
 const API_BASE = '/api';
-const WS_URL = '/ws';
 
 /**
  * REST API Client
@@ -142,83 +141,116 @@ class ApiClient {
 }
 
 /**
- * WebSocket Client
+ * SSE (Server-Sent Events) Client
  */
-class WebSocketClient {
-  private ws: WebSocket | null = null;
+class SSEClient {
+  private eventSource: EventSource | null = null;
   private url: string;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
   private messageHandlers: Map<string, (msg: WebSocketMessage) => void> = new Map();
   private connectionChangeHandlers: ((connected: boolean) => void)[] = [];
+  private manuallyDisconnected = false;
+  private clientId: string;
 
-  constructor(url: string = WS_URL) {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  constructor(url: string = '/sse') {
+    const protocol = window.location.protocol;
     const host = window.location.host;
     this.url = `${protocol}//${host}${url}`;
+    // Generate a persistent client ID for this session
+    this.clientId = `sse_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   }
 
   connect(): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.eventSource?.readyState === EventSource.OPEN) {
       return;
     }
 
-    try {
-      this.ws = new WebSocket(this.url);
+    this.manuallyDisconnected = false;
 
-      this.ws.onopen = () => {
-        console.log('WebSocket connected');
+    try {
+      // Add client_id as query parameter
+      const urlWithClientId = `${this.url}?client_id=${this.clientId}`;
+      this.eventSource = new EventSource(urlWithClientId);
+
+      this.eventSource.onopen = () => {
+        console.log('SSE connected');
         this.reconnectAttempts = 0;
         this.notifyConnectionChange(true);
       };
 
-      this.ws.onmessage = (event) => {
+      this.eventSource.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data) as WebSocketMessage;
-          this.handleMessage(message);
+          if (message.type !== 'ping') {
+            this.handleMessage(message);
+          }
         } catch (error) {
-          console.error('Failed to parse WebSocket message:', error);
+          console.error('Failed to parse SSE message:', error);
         }
       };
 
-      this.ws.onclose = () => {
-        console.log('WebSocket disconnected');
+      this.eventSource.onerror = (error) => {
+        console.error('SSE error:', error);
         this.notifyConnectionChange(false);
-        this.attemptReconnect();
-      };
-
-      this.ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        // EventSource automatically reconnects, but we'll handle it manually for more control
+        if (this.eventSource?.readyState === EventSource.CLOSED) {
+          this.attemptReconnect();
+        }
       };
     } catch (error) {
-      console.error('Failed to create WebSocket:', error);
+      console.error('Failed to create EventSource:', error);
       this.attemptReconnect();
     }
   }
 
   private attemptReconnect(): void {
+    if (this.manuallyDisconnected) {
+      return;
+    }
+
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 10000);
       console.log(`Reconnecting in ${delay}ms... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
       setTimeout(() => this.connect(), delay);
+    } else {
+      console.log('Max reconnection attempts reached');
     }
   }
 
   disconnect(): void {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    this.manuallyDisconnected = true;
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+      this.notifyConnectionChange(false);
     }
   }
 
-  send(message: WebSocketMessage | Record<string, unknown>): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
-    } else {
-      console.warn('WebSocket is not connected. Message not sent:', message);
+  async send(message: WebSocketMessage | Record<string, unknown>): Promise<void> {
+    try {
+      // Add sse_client_id to the message
+      const messageWithId = { ...message, sse_client_id: this.clientId };
+      const response = await fetch('/api/message', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(messageWithId),
+      });
+
+      if (!response.ok) {
+        console.error('Failed to send message via SSE POST endpoint');
+      }
+    } catch (error) {
+      console.error('Error sending message via SSE:', error);
     }
+  }
+
+  getClientId(): string {
+    return this.clientId;
   }
 
   on(type: string, handler: (msg: WebSocketMessage) => void): () => void {
@@ -248,10 +280,10 @@ class WebSocketClient {
   }
 
   isConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.eventSource?.readyState === EventSource.OPEN;
   }
 }
 
 // Export singleton instances
 export const api = new ApiClient();
-export const ws = new WebSocketClient();
+export const sse = new SSEClient();

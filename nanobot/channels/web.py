@@ -40,12 +40,16 @@ class WebChannel(BaseChannel):
         self._agent_loop: Any = None
         self._session_manager: Any = None
         self._cron_service: Any = None
+        self._channel_manager: Any = None
+        self._subagent_manager: Any = None
 
-    def set_services(self, agent_loop: Any = None, session_manager: Any = None, cron_service: Any = None) -> None:
+    def set_services(self, agent_loop: Any = None, session_manager: Any = None, cron_service: Any = None, channel_manager: Any = None, subagent_manager: Any = None) -> None:
         """Set references to core services for API access."""
         self._agent_loop = agent_loop
         self._session_manager = session_manager
         self._cron_service = cron_service
+        self._channel_manager = channel_manager
+        self._subagent_manager = subagent_manager
 
     async def start(self) -> None:
         """Start the web server."""
@@ -68,72 +72,133 @@ class WebChannel(BaseChannel):
             version="1.0.0"
         )
 
-        # CORS middleware
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=self.config.cors_origins,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
         # ============================================================================
-        # WebSocket Endpoint
+        # SSE Endpoint for real-time updates
         # ============================================================================
 
-        @app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
-            await websocket.accept()
-            client_id = f"web_{id(websocket)}"
+        import asyncio
+        from fastapi.responses import StreamingResponse
 
-            # Auth token validation
-            if self.config.auth_token:
-                token = websocket.query_params.get("token")
-                if token != self.config.auth_token:
-                    await websocket.close(code=1008, reason="Unauthorized")
-                    logger.warning("Web: Unauthorized connection attempt from {}", client_id)
+        # SSE client queue - use asyncio.Queue for async operations
+        self._sse_queues: dict[str, asyncio.Queue] = {}
+        self._sse_connected: dict[str, bool] = {}
+
+        @app.get("/sse")
+        async def sse_endpoint(client_id: str = Query(None)):
+            """Server-Sent Events endpoint for real-time updates."""
+            import uuid
+
+            # Use provided client_id or generate a new one
+            if not client_id:
+                client_id = str(uuid.uuid4())
+            queue: asyncio.Queue = asyncio.Queue()
+
+            self._sse_queues[client_id] = queue
+            self._sse_connected[client_id] = True
+
+            logger.info("SSE: Client connected: {}", client_id)
+
+            async def event_stream():
+                """Send events to the SSE client."""
+                try:
+                    while self._sse_connected.get(client_id, False):
+                        try:
+                            # Wait for events with timeout
+                            data = await asyncio.wait_for(
+                                queue.get(),
+                                timeout=1.0
+                            )
+                            yield f"data: {data}\n\n"
+                        except asyncio.TimeoutError:
+                            # Send keep-alive ping every second
+                            yield "data: {\"type\":\"ping\"}\n\n"
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    self._sse_connected.pop(client_id, None)
+                    self._sse_queues.pop(client_id, None)
+                    logger.info("SSE: Client disconnected: {}", client_id)
+
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        @app.post("/api/message")
+        async def send_message(request: dict):
+            """Send a message via SSE with streaming support."""
+            content = request.get("content", "")
+            if not content:
+                raise HTTPException(status_code=400, detail="Content is required")
+
+            sender_id = request.get("sender_id", "web")
+            chat_id = request.get("chat_id", "web")
+            sse_client_id = request.get("sse_client_id", "")
+
+            logger.info("Web: Message from {}: {}", sender_id, content[:100])
+
+            # Create progress callback for streaming (sends only to the requesting client)
+            async def progress_callback(text: str, tool_hint: bool = False):
+                """Send progress updates via SSE to the specific client."""
+                if not sse_client_id:
                     return
-
-            logger.info("Web: New WebSocket connection: {}", client_id)
-            self._websocket_connections[client_id] = websocket
-
-            try:
-                # Send welcome message
-                await websocket.send_json({
-                    "type": "system",
-                    "content": "Connected to nanobot. Type your message to start chatting!"
+                message = json.dumps({
+                    "type": "progress",
+                    "content": text,
+                    "tool_hint": tool_hint
                 })
+                # Send only to the specific client that requested this
+                queue = self._sse_queues.get(sse_client_id)
+                if queue and self._sse_connected.get(sse_client_id):
+                    await queue.put(message)
 
-                # Receive messages
-                while True:
-                    data = await websocket.receive_json()
+            # If agent loop is available, use it directly with progress callback
+            if self._agent_loop:
+                from nanobot.bus.events import InboundMessage
 
-                    if data.get("type") == "message":
-                        content = data.get("content", "")
-                        sender_id = data.get("sender_id", client_id)
+                # Check permissions
+                if not self.is_allowed(sender_id):
+                    raise HTTPException(status_code=403, detail="Access denied")
 
-                        if not content:
-                            continue
+                msg = InboundMessage(
+                    channel=self.name,
+                    sender_id=str(sender_id),
+                    chat_id=str(chat_id),
+                    content=content,
+                    metadata={"sse_client_id": sse_client_id} if sse_client_id else {},
+                )
 
-                        logger.info("Web: Message from {}: {}", sender_id, content[:100])
+                # Process message with progress callback for streaming
+                response = await self._agent_loop._process_message(
+                    msg,
+                    on_progress=progress_callback
+                )
 
-                        # Forward to message bus
-                        await self._handle_message(
-                            sender_id=sender_id,
-                            chat_id=client_id,
-                            content=content,
-                            metadata={"websocket_client_id": client_id}
-                        )
+                if response:
+                    # Send the final response via SSE to the specific client
+                    message_data = json.dumps({
+                        "type": "message",
+                        "content": response.content,
+                        "timestamp": response.metadata.get("timestamp") if response.metadata else None,
+                    })
+                    queue = self._sse_queues.get(sse_client_id)
+                    if queue and self._sse_connected.get(sse_client_id):
+                        await queue.put(message_data)
+            else:
+                # Fallback to message bus (no streaming)
+                await self._handle_message(
+                    sender_id=sender_id,
+                    chat_id=chat_id,
+                    content=content,
+                    metadata={"sse_client_id": sse_client_id}
+                )
 
-                    elif data.get("type") == "ping":
-                        await websocket.send_json({"type": "pong"})
-
-            except WebSocketDisconnect:
-                logger.info("Web: WebSocket disconnected: {}", client_id)
-            except Exception as e:
-                logger.error("Web: WebSocket error for {}: {}", client_id, e)
-            finally:
-                self._websocket_connections.pop(client_id, None)
+            return {"status": "sent"}
 
         # ============================================================================
         # REST API: Sessions
@@ -494,6 +559,218 @@ class WebChannel(BaseChannel):
                 raise HTTPException(status_code=500, detail=f"Error getting stats: {e}")
 
         # ============================================================================
+        # REST API: Channels
+        # ============================================================================
+
+        @app.get("/api/channels/status")
+        async def get_channels_status():
+            """Get status of all communication channels."""
+            try:
+                if not self._channel_manager:
+                    return {"channels": []}
+
+                channel_status = self._channel_manager.get_status()
+                channels = []
+
+                for name, status_info in channel_status.items():
+                    # Map backend status to frontend expected status
+                    running = status_info.get("running", False)
+                    enabled = status_info.get("enabled", True)
+
+                    if not enabled:
+                        status = "disconnected"
+                    elif running:
+                        status = "connected"
+                    elif status_info.get("error"):
+                        status = "error"
+                    else:
+                        status = "disconnected"
+
+                    channels.append({
+                        "id": name,
+                        "name": name.capitalize(),
+                        "status": status,
+                        "messagesSent": status_info.get("messages_sent", 0),
+                        "messagesReceived": status_info.get("messages_received", 0),
+                        "lastActivity": status_info.get("last_activity"),
+                        "error": status_info.get("error"),
+                    })
+
+                return {"channels": channels}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error getting channels status: {e}")
+
+        # ============================================================================
+        # REST API: Skills
+        # ============================================================================
+
+        @app.get("/api/skills")
+        async def list_skills():
+            """List available skills from the skills directory."""
+            try:
+                from nanobot.config.paths import get_workspace_path
+                workspace = get_workspace_path()
+                skills_dir = workspace / "skills"
+
+                skills = []
+                if skills_dir.exists():
+                    for skill_file in skills_dir.glob("*.md"):
+                        try:
+                            content = skill_file.read_text(encoding="utf-8")
+                            # Extract skill name from first heading
+                            name = skill_file.stem
+                            description = ""
+
+                            # Parse frontmatter or first heading
+                            lines = content.split("\n")
+                            for line in lines:
+                                if line.startswith("# "):
+                                    name = line[2:].strip()
+                                    break
+
+                            # Get first paragraph as description
+                            in_content = False
+                            for i, line in enumerate(lines):
+                                if not in_content and line.startswith("# "):
+                                    in_content = True
+                                elif in_content and line.strip() and not line.startswith("#"):
+                                    description = line.strip()
+                                    break
+
+                            # Extract triggers if present
+                            triggers = []
+                            for line in lines:
+                                if "trigger:" in line.lower() or "触发:" in line:
+                                    trigger_parts = line.split(":")
+                                    if len(trigger_parts) > 1:
+                                        triggers.extend([t.strip() for t in trigger_parts[1].split(",")])
+
+                            skills.append({
+                                "id": skill_file.stem,
+                                "name": name,
+                                "description": description,
+                                "triggers": triggers,
+                                "source": str(skill_file.relative_to(workspace)),
+                            })
+                        except Exception as e:
+                            logger.warning("Failed to parse skill file {}: {}", skill_file, e)
+
+                return {"skills": skills, "total": len(skills)}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error listing skills: {e}")
+
+        @app.get("/api/skills/{skill_id}/source")
+        async def get_skill_source(skill_id: str):
+            """Get the source code of a specific skill."""
+            try:
+                from nanobot.config.paths import get_workspace_path
+                workspace = get_workspace_path()
+                skill_file = workspace / "skills" / f"{skill_id}.md"
+
+                if not skill_file.exists():
+                    raise HTTPException(status_code=404, detail=f"Skill not found: {skill_id}")
+
+                content = skill_file.read_text(encoding="utf-8")
+                return {"content": content, "file": str(skill_file)}
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error reading skill: {e}")
+
+        # ============================================================================
+        # REST API: Subagent Tasks
+        # ============================================================================
+
+        @app.get("/api/subagents/tasks")
+        async def list_subagent_tasks():
+            """List running subagent tasks."""
+            try:
+                if not self._subagent_manager:
+                    return {"tasks": []}
+
+                tasks = self._subagent_manager.get_all_tasks()
+                return {"tasks": tasks}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error listing subagent tasks: {e}")
+
+        @app.get("/api/subagents/tasks/{task_id}")
+        async def get_subagent_task(task_id: str):
+            """Get a specific subagent task."""
+            try:
+                if not self._subagent_manager:
+                    raise HTTPException(status_code=503, detail="Subagent manager not available")
+
+                task = self._subagent_manager.get_task(task_id)
+                if not task:
+                    raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+
+                return task
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error getting task: {e}")
+
+        @app.delete("/api/subagents/tasks/{task_id}")
+        async def cancel_subagent_task(task_id: str):
+            """Cancel a running subagent task."""
+            try:
+                if not self._subagent_manager:
+                    raise HTTPException(status_code=503, detail="Subagent manager not available")
+
+                success = self._subagent_manager.cancel_task(task_id)
+                if not success:
+                    raise HTTPException(status_code=404, detail=f"Task not found or already completed: {task_id}")
+
+                return {"message": "Task cancelled"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error cancelling task: {e}")
+
+        # ============================================================================
+        # REST API: MCP Servers
+        # ============================================================================
+
+        @app.get("/api/mcp/servers")
+        async def list_mcp_servers():
+            """List connected MCP servers and their tools."""
+            try:
+                if not self._agent_loop or not hasattr(self._agent_loop, 'tools'):
+                    return {"servers": []}
+
+                # Get MCP tools from the agent loop
+                tools = self._agent_loop.tools.get_definitions()
+                mcp_tools = {}
+
+                for tool_def in tools:
+                    if isinstance(tool_def, dict):
+                        func = tool_def.get("function", {})
+                        tool_name = func.get("name", "")
+                        # Check if this is an MCP tool (usually has specific patterns)
+                        if "mcp_" in tool_name or hasattr(func.get("parameters", {}), "mcp_server"):
+                            server_name = func.get("parameters", {}).get("mcp_server", "unknown")
+                            if server_name not in mcp_tools:
+                                mcp_tools[server_name] = []
+                            mcp_tools[server_name].append({
+                                "name": tool_name,
+                                "description": func.get("description", "")
+                            })
+
+                servers = []
+                for server_name, tools_list in mcp_tools.items():
+                    servers.append({
+                        "id": server_name,
+                        "name": server_name,
+                        "status": "connected",
+                        "toolCount": len(tools_list),
+                        "tools": [t["name"] for t in tools_list],
+                    })
+
+                return {"servers": servers}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error listing MCP servers: {e}")
+
+        # ============================================================================
         # Health Check
         # ============================================================================
 
@@ -502,12 +779,53 @@ class WebChannel(BaseChannel):
             return {"status": "ok", "connections": len(self._websocket_connections)}
 
         # ============================================================================
-        # Serve Static Files
+        # Serve Static Files (Dashboard)
         # ============================================================================
 
-        static_dir = Path(__file__).parent.parent / "web" / "static"
-        if static_dir.exists():
-            app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+        from fastapi.responses import FileResponse
+
+        dashboard_dist = Path(__file__).parent.parent / "web" / "dashboard" / "dist"
+        index_path = dashboard_dist / "index.html" if dashboard_dist.exists() else None
+
+        if dashboard_dist.exists():
+            # Serve static assets
+            @app.get("/assets/{file_path:path}")
+            async def serve_asset(file_path: str):
+                """Serve static assets from the dist directory."""
+                asset_path = dashboard_dist / "assets" / file_path
+                if asset_path.exists() and asset_path.is_file():
+                    return FileResponse(asset_path)
+                raise HTTPException(status_code=404, detail="Asset not found")
+
+            # Serve favicon
+            favicon_path = dashboard_dist / "favicon.svg"
+            if favicon_path.exists():
+                @app.get("/favicon.svg")
+                async def serve_favicon():
+                    return FileResponse(favicon_path)
+
+            # Serve index.html for root path
+            @app.get("/")
+            async def serve_root():
+                """Serve the SPA for root path."""
+                if index_path and index_path.exists():
+                    return FileResponse(index_path)
+                raise HTTPException(status_code=404, detail="Dashboard not found")
+
+            # Catch-all route for SPA routing
+            # This must be LAST so it only catches unmatched routes
+            @app.get("/{full_path:path}")
+            async def serve_spa(full_path: str):
+                """Serve the SPA for all unmatched paths (client-side routing)."""
+                # Skip API routes, SSE, health check, and static assets
+                # These should be handled by their specific routes above
+                if full_path.startswith("api/") or full_path.startswith("sse") or full_path == "health":
+                    raise HTTPException(status_code=404, detail="Not found")
+
+                # For all other paths, serve index.html for SPA routing
+                if index_path and index_path.exists():
+                    return FileResponse(index_path)
+                raise HTTPException(status_code=404, detail="Dashboard not found")
 
         self._server = app
         self._running = True
@@ -517,7 +835,9 @@ class WebChannel(BaseChannel):
             app,
             host=self._host,
             port=self._port,
-            log_level="info"
+            log_level="info",
+            ws_ping_interval=20,
+            ws_ping_timeout=20,
         )
         server = uvicorn.Server(config)
 
@@ -544,36 +864,32 @@ class WebChannel(BaseChannel):
         logger.info("Web server stopped")
 
     async def send(self, msg: OutboundMessage) -> None:
-        """Send a message to the web client."""
-        client_id = msg.chat_id
-        websocket = self._websocket_connections.get(client_id)
+        """Send a message to the web client via SSE."""
+        # Broadcast to all SSE clients
+        import json
 
-        if not websocket:
-            logger.warning("Web: No WebSocket connection for {}", client_id)
-            return
+        message_data = json.dumps({
+            "type": "message",
+            "content": msg.content,
+            "timestamp": msg.metadata.get("timestamp") if msg.metadata else None,
+        })
 
-        try:
-            await websocket.send_json({
-                "type": "message",
-                "content": msg.content,
-                "timestamp": msg.metadata.get("timestamp") if msg.metadata else None,
-            })
-        except Exception as e:
-            logger.error("Web: Error sending to {}: {}", client_id, e)
-            # Remove broken connection
-            self._websocket_connections.pop(client_id, None)
+        for client_id, queue in list(self._sse_queues.items()):
+            if self._sse_connected.get(client_id):
+                await queue.put(message_data)
+
+        # Track sent message
+        await self._track_sent()
 
     def get_connection_count(self) -> int:
-        """Get number of active WebSocket connections."""
-        return len(self._websocket_connections)
+        """Get number of active SSE connections."""
+        return len(self._sse_connected)
 
     async def broadcast_event(self, event_type: str, data: dict) -> None:
-        """Broadcast an event to all connected WebSocket clients."""
-        message = {"type": event_type, **data}
+        """Broadcast an event to all connected SSE clients."""
+        import json
+        message = json.dumps({"type": event_type, **data})
 
-        for client_id, ws in list(self._websocket_connections.items()):
-            try:
-                await ws.send_json(message)
-            except Exception:
-                # Remove broken connection
-                self._websocket_connections.pop(client_id, None)
+        for client_id, queue in list(self._sse_queues.items()):
+            if self._sse_connected.get(client_id):
+                await queue.put(message)

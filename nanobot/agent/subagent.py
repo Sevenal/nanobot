@@ -50,6 +50,8 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
+        # Store task metadata for API access
+        self._task_metadata: dict[str, dict[str, Any]] = {}  # task_id -> {prompt, label, started_at, origin, ...}
 
     async def spawn(
         self,
@@ -58,11 +60,25 @@ class SubagentManager:
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
+        parent_message_id: str | None = None,
     ) -> str:
         """Spawn a subagent to execute a task in the background."""
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
         origin = {"channel": origin_channel, "chat_id": origin_chat_id}
+
+        # Store task metadata
+        from datetime import datetime
+        self._task_metadata[task_id] = {
+            "id": task_id,
+            "prompt": task,
+            "label": display_label,
+            "started_at": datetime.now().isoformat(),
+            "origin": origin,
+            "parent_message_id": parent_message_id,
+            "status": "running",
+            "progress": "Initializing...",
+        }
 
         bg_task = asyncio.create_task(
             self._run_subagent(task_id, task, display_label, origin)
@@ -71,8 +87,17 @@ class SubagentManager:
         if session_key:
             self._session_tasks.setdefault(session_key, set()).add(task_id)
 
-        def _cleanup(_: asyncio.Task) -> None:
+        def _cleanup(task: asyncio.Task) -> None:
             self._running_tasks.pop(task_id, None)
+            # Update metadata on completion
+            if task_id in self._task_metadata:
+                if task.exception():
+                    self._task_metadata[task_id]["status"] = "failed"
+                    self._task_metadata[task_id]["error"] = str(task.exception())
+                    self._task_metadata[task_id]["completed_at"] = datetime.now().isoformat()
+                elif task.done():
+                    self._task_metadata[task_id]["status"] = "completed"
+                    self._task_metadata[task_id]["completed_at"] = datetime.now().isoformat()
             if session_key and (ids := self._session_tasks.get(session_key)):
                 ids.discard(task_id)
                 if not ids:
@@ -92,6 +117,10 @@ class SubagentManager:
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
+
+        # Update progress
+        if task_id in self._task_metadata:
+            self._task_metadata[task_id]["progress"] = "Starting task execution..."
 
         try:
             # Build subagent tools (no message tool, no spawn tool)
@@ -121,8 +150,16 @@ class SubagentManager:
             iteration = 0
             final_result: str | None = None
 
+            # Update progress
+            if task_id in self._task_metadata:
+                self._task_metadata[task_id]["progress"] = f"Running (iteration 0/{max_iterations})..."
+
             while iteration < max_iterations:
                 iteration += 1
+
+                # Update progress
+                if task_id in self._task_metadata:
+                    self._task_metadata[task_id]["progress"] = f"Running (iteration {iteration}/{max_iterations})..."
 
                 response = await self.provider.chat_with_retry(
                     messages=messages,
@@ -171,11 +208,23 @@ class SubagentManager:
                 final_result = "Task completed but no final response was generated."
 
             logger.info("Subagent [{}] completed successfully", task_id)
+
+            # Store result in metadata
+            if task_id in self._task_metadata:
+                self._task_metadata[task_id]["result"] = final_result
+                self._task_metadata[task_id]["progress"] = "Completed"
+
             await self._announce_result(task_id, label, task, final_result, origin, "ok")
 
         except Exception as e:
             error_msg = f"Error: {str(e)}"
             logger.error("Subagent [{}] failed: {}", task_id, e)
+
+            # Store error in metadata
+            if task_id in self._task_metadata:
+                self._task_metadata[task_id]["error"] = error_msg
+                self._task_metadata[task_id]["progress"] = f"Failed: {str(e)[:100]}"
+
             await self._announce_result(task_id, label, task, error_msg, origin, "error")
 
     async def _announce_result(
@@ -245,3 +294,57 @@ Stay focused on the assigned task. Your final response will be reported back to 
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""
         return len(self._running_tasks)
+
+    def get_all_tasks(self) -> list[dict[str, Any]]:
+        """Get all tasks with their metadata."""
+        tasks = []
+        for task_id, metadata in self._task_metadata.items():
+            # Check if task is still running
+            is_running = task_id in self._running_tasks and not self._running_tasks[task_id].done()
+            if not is_running and metadata.get("status") == "running":
+                metadata["status"] = "completed"
+                metadata["completed_at"] = metadata.get("completed_at", metadata["started_at"])
+
+            tasks.append({
+                "id": metadata["id"],
+                "parentMessageId": metadata.get("parent_message_id", ""),
+                "status": metadata.get("status", "unknown"),
+                "prompt": metadata["prompt"],
+                "progress": metadata.get("progress", ""),
+                "startedAt": metadata["started_at"],
+                "completedAt": metadata.get("completed_at"),
+                "result": metadata.get("result"),
+                "error": metadata.get("error"),
+            })
+        return tasks
+
+    def get_task(self, task_id: str) -> dict[str, Any] | None:
+        """Get a specific task by ID."""
+        if task_id not in self._task_metadata:
+            return None
+        metadata = self._task_metadata[task_id]
+        return {
+            "id": metadata["id"],
+            "parentMessageId": metadata.get("parent_message_id", ""),
+            "status": metadata.get("status", "unknown"),
+            "prompt": metadata["prompt"],
+            "progress": metadata.get("progress", ""),
+            "startedAt": metadata["started_at"],
+            "completedAt": metadata.get("completed_at"),
+            "result": metadata.get("result"),
+            "error": metadata.get("error"),
+        }
+
+    def cancel_task(self, task_id: str) -> bool:
+        """Cancel a specific task by ID."""
+        if task_id not in self._running_tasks:
+            return False
+        task = self._running_tasks[task_id]
+        if not task.done():
+            task.cancel()
+            if task_id in self._task_metadata:
+                self._task_metadata[task_id]["status"] = "cancelled"
+                from datetime import datetime
+                self._task_metadata[task_id]["completed_at"] = datetime.now().isoformat()
+            return True
+        return False
