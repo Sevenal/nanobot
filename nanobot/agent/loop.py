@@ -82,6 +82,9 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
+        # Global event callback for broadcasting events to all channels (e.g., Web UI event log)
+        self.on_event_callback: Callable[[str, str, str], Awaitable[None]] | None = None
+
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
@@ -214,6 +217,10 @@ class AgentLoop:
                         await on_progress(thought)
                     await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
 
+                # Broadcast tool call event globally
+                if self.on_event_callback:
+                    await self.on_event_callback("tool_call", self._tool_hint(response.tool_calls), "agent")
+
                 tool_call_dicts = [
                     {
                         "id": tc.id,
@@ -236,6 +243,17 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+
+                    # Send tool result as progress event
+                    if on_progress:
+                        result_preview = result[:200] + "..." if len(result) > 200 else result
+                        await on_progress(f"{tool_call.name}: {result_preview}", tool_hint=False)
+
+                    # Broadcast tool result event globally
+                    if self.on_event_callback:
+                        result_preview = result[:200] + "..." if len(result) > 200 else result
+                        await self.on_event_callback("tool_result", f"{tool_call.name}: {result_preview}", "agent")
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )

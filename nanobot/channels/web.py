@@ -51,6 +51,14 @@ class WebChannel(BaseChannel):
         self._channel_manager = channel_manager
         self._subagent_manager = subagent_manager
 
+        # Register global event callback to broadcast all agent events to SSE
+        if agent_loop:
+            async def broadcast_event(event_type: str, content: str, channel: str) -> None:
+                """Broadcast agent events to all SSE clients."""
+                await self.broadcast_event(event_type, {"content": content, "channel": channel})
+
+            agent_loop.on_event_callback = broadcast_event
+
     async def start(self) -> None:
         """Start the web server."""
         try:
@@ -142,20 +150,20 @@ class WebChannel(BaseChannel):
 
             logger.info("Web: Message from {}: {}", sender_id, content[:100])
 
-            # Create progress callback for streaming (sends only to the requesting client)
+            # Create progress callback for streaming
             async def progress_callback(text: str, tool_hint: bool = False):
-                """Send progress updates via SSE to the specific client."""
-                if not sse_client_id:
-                    return
+                """Send progress updates via SSE."""
+                # Determine event type
+                event_type = "tool_call" if tool_hint else "progress"
                 message = json.dumps({
-                    "type": "progress",
+                    "type": event_type,
                     "content": text,
-                    "tool_hint": tool_hint
-                })
-                # Send only to the specific client that requested this
-                queue = self._sse_queues.get(sse_client_id)
-                if queue and self._sse_connected.get(sse_client_id):
-                    await queue.put(message)
+                }, ensure_ascii=False)
+
+                # Broadcast to all connected SSE clients for event log
+                for client_id, queue in list(self._sse_queues.items()):
+                    if self._sse_connected.get(client_id):
+                        await queue.put(message)
 
             # If agent loop is available, use it directly with progress callback
             if self._agent_loop:
@@ -180,15 +188,15 @@ class WebChannel(BaseChannel):
                 )
 
                 if response:
-                    # Send the final response via SSE to the specific client
+                    # Broadcast the final response to all SSE clients
                     message_data = json.dumps({
                         "type": "message",
                         "content": response.content,
                         "timestamp": response.metadata.get("timestamp") if response.metadata else None,
-                    })
-                    queue = self._sse_queues.get(sse_client_id)
-                    if queue and self._sse_connected.get(sse_client_id):
-                        await queue.put(message_data)
+                    }, ensure_ascii=False)
+                    for client_id, queue in list(self._sse_queues.items()):
+                        if self._sse_connected.get(client_id):
+                            await queue.put(message_data)
             else:
                 # Fallback to message bus (no streaming)
                 await self._handle_message(
@@ -290,8 +298,45 @@ class WebChannel(BaseChannel):
                 raise HTTPException(status_code=503, detail="Cron service not available")
 
             try:
+                from nanobot.cron.types import CronJob
+
                 jobs = self._cron_service.list_jobs(include_disabled=include_disabled)
-                return {"jobs": jobs, "total": len(jobs)}
+
+                # Convert CronJob objects to dict for JSON serialization
+                def job_to_dict(job: CronJob) -> dict:
+                    # Determine schedule string based on type
+                    schedule_str = ""
+                    if job.schedule.kind == "at":
+                        schedule_str = str(job.schedule.at_ms) if job.schedule.at_ms else ""
+                    elif job.schedule.kind == "every":
+                        schedule_str = str(job.schedule.every_ms) if job.schedule.every_ms else ""
+                    else:
+                        schedule_str = job.schedule.expr or ""
+
+                    return {
+                        "id": job.id,
+                        "name": job.name,
+                        "schedule_type": job.schedule.kind,
+                        "schedule": schedule_str,
+                        "payload": {
+                            "kind": job.payload.kind,
+                            "message": job.payload.message,
+                            "deliver": job.payload.deliver,
+                            "channel": job.payload.channel,
+                            "to": job.payload.to,
+                        },
+                        "enabled": job.enabled,
+                        "created_at": datetime.fromtimestamp(job.created_at_ms / 1000).isoformat() if job.created_at_ms else datetime.now().isoformat(),
+                        "updated_at": datetime.fromtimestamp(job.updated_at_ms / 1000).isoformat() if job.updated_at_ms else datetime.now().isoformat(),
+                        "next_run": str(job.state.next_run_at_ms) if job.state.next_run_at_ms else None,
+                        "last_run": str(job.state.last_run_at_ms) if job.state.last_run_at_ms else None,
+                        "last_status": job.state.last_status,
+                        "last_error": job.state.last_error,
+                        "delete_after_run": job.delete_after_run,
+                    }
+
+                jobs_dict = [job_to_dict(job) for job in jobs]
+                return {"jobs": jobs_dict, "total": len(jobs_dict)}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Error listing jobs: {e}")
 
@@ -302,42 +347,57 @@ class WebChannel(BaseChannel):
                 raise HTTPException(status_code=503, detail="Cron service not available")
 
             try:
-                from nanobot.cron.types import CronJob, CronPayload, ScheduleType
+                from nanobot.cron.types import CronSchedule
 
-                # Parse schedule type
+                # Parse request data
+                name = job_data.get("name", "Untitled Job")
+                schedule_type = job_data.get("schedule_type", "every")
                 schedule_str = job_data.get("schedule", "")
+                payload_data = job_data.get("payload", {})
+
                 if not schedule_str:
                     raise HTTPException(status_code=400, detail="Schedule is required")
 
-                # Determine schedule type
-                if schedule_str.startswith("at:"):
-                    schedule_type = ScheduleType.AT
-                    schedule_value = schedule_str[3:]
-                elif schedule_str.startswith("every:"):
-                    schedule_type = ScheduleType.EVERY
-                    schedule_value = schedule_str[6:]
-                else:
-                    schedule_type = ScheduleType.CRON
-                    schedule_value = schedule_str
+                # Build CronSchedule based on type
+                if schedule_type == "at":
+                    # Parse timestamp (could be string number or actual number)
+                    try:
+                        at_ms = int(schedule_str)
+                        schedule = CronSchedule(kind="at", at_ms=at_ms)
+                    except ValueError:
+                        raise HTTPException(status_code=400, detail="Invalid timestamp for 'at' schedule")
 
-                # Create job
-                job = CronJob(
-                    id=f"job_{datetime.now().timestamp()}",
-                    name=job_data.get("name", "Untitled Job"),
-                    schedule_type=schedule_type,
-                    schedule=schedule_value,
-                    payload=CronPayload(
-                        message=job_data.get("message", ""),
-                        deliver=job_data.get("deliver", True),
-                        channel=job_data.get("channel", "cli"),
-                        to=job_data.get("to", "direct")
-                    ),
-                    enabled=job_data.get("enabled", True),
-                    created_at=datetime.now().isoformat()
+                elif schedule_type == "every":
+                    # Parse interval like "1h", "30m", "1d"
+                    import re
+                    match = re.match(r'^(\d+)([mhd])$', schedule_str.lower())
+                    if not match:
+                        raise HTTPException(status_code=400, detail="Invalid interval format. Use format like '1h', '30m', '1d'")
+
+                    value = int(match.group(1))
+                    unit = match.group(2)
+
+                    # Convert to milliseconds
+                    multipliers = {"m": 60000, "h": 3600000, "d": 86400000}
+                    every_ms = value * multipliers[unit]
+                    schedule = CronSchedule(kind="every", every_ms=every_ms)
+
+                else:  # cron
+                    schedule = CronSchedule(kind="cron", expr=schedule_str)
+
+                # Call cron service to add job
+                job = self._cron_service.add_job(
+                    name=name,
+                    schedule=schedule,
+                    message=payload_data.get("message", ""),
+                    deliver=payload_data.get("deliver", False),
+                    channel=payload_data.get("channel"),
+                    to=payload_data.get("to"),
                 )
 
-                self._cron_service.add_job(job)
                 return {"message": "Job created", "job_id": job.id}
+            except HTTPException:
+                raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Error creating job: {e}")
 
@@ -365,6 +425,22 @@ class WebChannel(BaseChannel):
                 return {"message": "Job updated"}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Error updating job: {e}")
+
+        @app.post("/api/cron/jobs/{job_id}/run")
+        async def run_cron_job(job_id: str):
+            """Manually run a cron job."""
+            if not self._cron_service:
+                raise HTTPException(status_code=503, detail="Cron service not available")
+
+            try:
+                success = await self._cron_service.run_job(job_id, force=True)
+                if not success:
+                    raise HTTPException(status_code=404, detail="Job not found")
+                return {"message": "Job executed"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error running job: {e}")
 
         # ============================================================================
         # REST API: Tools
@@ -496,6 +572,45 @@ class WebChannel(BaseChannel):
                 return config_dict
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Error loading config: {e}")
+
+        @app.get("/api/channels")
+        async def get_channels():
+            """Get list of enabled channels."""
+            try:
+                from nanobot.config.loader import load_config
+
+                config = load_config()
+                channels_config = config.channels
+
+                # Channel display names
+                channel_names = {
+                    "whatsapp": "WhatsApp",
+                    "telegram": "Telegram",
+                    "discord": "Discord",
+                    "feishu": "Feishu",
+                    "mochat": "Mochat",
+                    "dingtalk": "DingTalk",
+                    "email": "Email",
+                    "slack": "Slack",
+                    "qq": "QQ",
+                    "matrix": "Matrix",
+                    "wecom": "WeCom",
+                    "web": "Web",
+                }
+
+                enabled_channels = []
+                for channel_id, name in channel_names.items():
+                    if hasattr(channels_config, channel_id):
+                        channel_config = getattr(channels_config, channel_id)
+                        if hasattr(channel_config, 'enabled') and channel_config.enabled:
+                            enabled_channels.append({
+                                "id": channel_id,
+                                "name": name,
+                            })
+
+                return {"channels": enabled_channels}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Error loading channels: {e}")
 
         @app.put("/api/config")
         async def update_config(updates: dict):
@@ -889,11 +1004,30 @@ class WebChannel(BaseChannel):
         # Broadcast to all SSE clients
         import json
 
+        # Determine event type based on metadata
+        metadata = msg.metadata or {}
+        event_type = "message"
+
+        # Check for progress/tool events
+        if metadata.get("_progress"):
+            if metadata.get("_tool_hint"):
+                event_type = "tool_call"
+            else:
+                event_type = "progress"
+        elif metadata.get("_tool_result"):
+            event_type = "tool_result"
+        elif metadata.get("_error"):
+            event_type = "error"
+        elif metadata.get("_system"):
+            event_type = "system"
+        elif metadata.get("_status"):
+            event_type = "status"
+
         message_data = json.dumps({
-            "type": "message",
+            "type": event_type,
             "content": msg.content,
-            "timestamp": msg.metadata.get("timestamp") if msg.metadata else None,
-        })
+            "timestamp": metadata.get("timestamp"),
+        }, ensure_ascii=False)
 
         for client_id, queue in list(self._sse_queues.items()):
             if self._sse_connected.get(client_id):
@@ -909,7 +1043,7 @@ class WebChannel(BaseChannel):
     async def broadcast_event(self, event_type: str, data: dict) -> None:
         """Broadcast an event to all connected SSE clients."""
         import json
-        message = json.dumps({"type": event_type, **data})
+        message = json.dumps({"type": event_type, **data}, ensure_ascii=False)
 
         for client_id, queue in list(self._sse_queues.items()):
             if self._sse_connected.get(client_id):

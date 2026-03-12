@@ -8,7 +8,7 @@ import { useState, useRef, useEffect } from 'react';
 import {
   Send, Bot, User, Loader2, ChevronDown, ChevronRight,
   Terminal, Wrench, CheckCircle, XCircle, Zap,
-  Braces, FileText, GitBranch, Sparkles
+  FileText, Filter
 } from 'lucide-react';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { api, sse } from '@/api/client';
@@ -124,16 +124,17 @@ const DEFAULT_MESSAGE: ChatMessage = {
   content: '👋 欢迎使用 nanobot！我可以帮助你完成各种任务。'
 };
 
-// Icons for different thinking step types
-const getStepIcon = (content: string) => {
-  const lower = content.toLowerCase();
-  if (lower.includes('搜索') || lower.includes('search') || lower.includes('查找')) return <Search className="h-3.5 w-3.5" />;
-  if (lower.includes('工具') || lower.includes('tool') || lower.includes('调用')) return <Wrench className="h-3.5 w-3.5" />;
-  if (lower.includes('分析') || lower.includes('analyze')) return <Braces className="h-3.5 w-3.5" />;
-  if (lower.includes('思考') || lower.includes('think') || lower.includes('reasoning')) return <Sparkles className="h-3.5 w-3.5" />;
-  if (lower.includes('读取') || lower.includes('read') || lower.includes('file')) return <FileText className="h-3.5 w-3.5" />;
-  if (lower.includes('分支') || lower.includes('plan') || lower.includes('strategy')) return <GitBranch className="h-3.5 w-3.5" />;
-  return <Zap className="h-3.5 w-3.5" />;
+// Get a display name for session keys
+const getSessionDisplayName = (key: string): string => {
+  const parts = key.split(':');
+  if (parts.length >= 2) {
+    const channel = parts[0];
+    const identifier = parts.slice(1).join(':');
+    // Truncate long identifiers
+    const displayId = identifier.length > 20 ? identifier.substring(0, 20) + '...' : identifier;
+    return `${channel}: ${displayId}`;
+  }
+  return key;
 };
 
 const Search = ({ className }: { className?: string }) => (
@@ -152,71 +153,7 @@ const getToolIcon = (toolName: string) => {
   return <Wrench className="h-4 w-4" />;
 };
 
-// Thinking Process Component
-function ThinkingProcess({ steps }: { steps: ThinkingStep[] }) {
-  const [expanded, setExpanded] = useState(true);
-
-  if (steps.length === 0) return null;
-
-  const completedSteps = steps.filter(s => s.status === 'completed').length;
-  const hasError = steps.some(s => s.status === 'error');
-
-  return (
-    <div className={`mb-3 rounded-lg border ${hasError ? 'border-orange-500/30 bg-orange-500/5' : 'border-primary/20 bg-primary/5'} overflow-hidden`}>
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-primary/10 transition-colors"
-      >
-        <div className="flex items-center gap-2">
-          <Sparkles className={`h-3.5 w-3.5 ${hasError ? 'text-orange-500' : 'text-primary'} animate-pulse`} />
-          <span className="text-xs font-medium">
-            思考过程 {completedSteps > 0 && `(${completedSteps}/${steps.length})`}
-          </span>
-          {steps.some(s => s.status === 'running') && (
-            <Loader2 className="h-3 w-3 animate-spin text-primary" />
-          )}
-        </div>
-        {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
-      </button>
-
-      {expanded && (
-        <div className="px-3 pb-3 space-y-1.5">
-          {steps.map((step) => (
-            <div
-              key={step.id}
-              className={`flex items-start gap-2 text-xs py-1.5 px-2 rounded ${
-                step.status === 'running'
-                  ? 'bg-primary/10 border border-primary/20'
-                  : step.status === 'error'
-                  ? 'bg-red-500/10 border border-red-500/20'
-                  : 'bg-muted/30'
-              }`}
-            >
-              <div className={`flex-shrink-0 mt-0.5 ${
-                step.status === 'running' ? 'text-primary' :
-                step.status === 'error' ? 'text-red-500' : 'text-green-500'
-              }`}>
-                {step.status === 'running' ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : step.status === 'error' ? (
-                  <XCircle className="h-3 w-3" />
-                ) : (
-                  <CheckCircle className="h-3 w-3" />
-                )}
-              </div>
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                {getStepIcon(step.content)}
-                <span className={step.status === 'running' ? 'text-foreground' : ''}>{step.content}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Tool Call Component
+// Tool Call Component (collapsible with arguments and results)
 function ToolCallCard({ tool }: { tool: ToolCallDisplay }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -286,19 +223,58 @@ function ToolCallCard({ tool }: { tool: ToolCallDisplay }) {
   );
 }
 
-// Loading/Thinking Indicator Component
+// Execution Process Component - only shows tool calls
+function ExecutionProcess({ toolCalls }: { toolCalls?: ToolCallDisplay[] }) {
+  const [expanded, setExpanded] = useState(true);
+
+  if (!toolCalls || toolCalls.length === 0) return null;
+
+  const completedCalls = toolCalls.filter(t => t.status === 'completed').length;
+  const hasError = toolCalls.some(t => t.status === 'error');
+  const isRunning = toolCalls.some(t => t.status === 'running');
+
+  return (
+    <div className={`mb-3 rounded-lg border ${hasError ? 'border-orange-500/30 bg-orange-500/5' : 'border-blue-500/20 bg-blue-500/5'} overflow-hidden`}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-blue-500/10 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Wrench className={`h-3.5 w-3.5 ${hasError ? 'text-orange-500' : 'text-blue-500'} ${isRunning ? 'animate-pulse' : ''}`} />
+          <span className="text-xs font-medium">
+            执行过程 {completedCalls > 0 && `(${completedCalls}/${toolCalls.length})`}
+          </span>
+          {isRunning && (
+            <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+          )}
+        </div>
+        {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3 space-y-2">
+          {toolCalls.map((tool) => (
+            <ToolCallCard key={tool.id} tool={tool} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Loading/Execution Indicator Component
 function ThinkingIndicator({ progress, currentStep }: { progress?: string; currentStep?: string }) {
   return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/5 border border-blue-500/20">
       <div className="relative">
-        <div className="absolute inset-0 bg-primary/20 rounded-full animate-ping" />
-        <Sparkles className="h-4 w-4 text-primary relative" />
+        <div className="absolute inset-0 bg-blue-500/20 rounded-full animate-ping" />
+        <Zap className="h-4 w-4 text-blue-500 relative" />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-xs font-medium text-foreground">{currentStep || '思考中...'}</div>
+        <div className="text-xs font-medium text-foreground">{currentStep || '执行中...'}</div>
         {progress && <div className="text-[10px] text-muted-foreground truncate">{progress}</div>}
       </div>
-      <Loader2 className="h-4 w-4 animate-spin text-primary" />
+      <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
     </div>
   );
 }
@@ -312,6 +288,8 @@ export default function Chat() {
   const [currentStep, setCurrentStep] = useState('');
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
   const [toolCalls, setToolCalls] = useState<ToolCallDisplay[]>([]);
+  const [allSessions, setAllSessions] = useState<string[]>([]);
+  const [selectedSessionKey, setSelectedSessionKey] = useState<string>(WEB_SESSION_KEY);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -335,12 +313,26 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, progress, currentStep, thinkingSteps, toolCalls]);
 
-  // Load session from backend on mount
+  // Load all sessions on mount
+  useEffect(() => {
+    const loadSessions = async () => {
+      try {
+        const sessionsData = await api.listSessions({ limit: 100, offset: 0 });
+        const sessionKeys = sessionsData.sessions.map(s => s.key);
+        setAllSessions(sessionKeys);
+      } catch (error) {
+        console.error('Failed to load sessions:', error);
+      }
+    };
+    loadSessions();
+  }, []);
+
+  // Load session from backend on mount and when selected session changes
   useEffect(() => {
     const loadSession = async () => {
       try {
         setLoadingSession(true);
-        const session = await api.getSession(WEB_SESSION_KEY);
+        const session = await api.getSession(selectedSessionKey);
         if (session.messages && session.messages.length > 0) {
           // First, build a map of tool_call_id -> tool result
           const toolResults = new Map<string, { name: string; content: string; timestamp?: string }>();
@@ -469,7 +461,7 @@ export default function Chat() {
     };
 
     loadSession();
-  }, []);
+  }, [selectedSessionKey]);
 
   // Set up SSE message handlers
   useEffect(() => {
@@ -652,6 +644,30 @@ export default function Chat() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] flex flex-col">
+      {/* Session Selector Header */}
+      <div className="flex items-center gap-4 pb-3 mb-3 border-b border-border/50">
+        <div className="flex items-center gap-2 flex-1">
+          <Filter className="h-4 w-4 text-muted-foreground" />
+          <select
+            value={selectedSessionKey}
+            onChange={(e) => setSelectedSessionKey(e.target.value)}
+            className="input flex-1 max-w-md text-sm"
+          >
+            {allSessions.length > 0 ? (
+              allSessions.map((key) => (
+                <option key={key} value={key}>{getSessionDisplayName(key)}</option>
+              ))
+            ) : (
+              <option value={WEB_SESSION_KEY}>Web 会话</option>
+            )}
+          </select>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
+          {connected ? '已连接' : '未连接'}
+        </div>
+      </div>
+
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto rounded-xl border border-border/50 bg-card/50 backdrop-blur-sm p-4">
         <div className="space-y-4">
@@ -675,20 +691,11 @@ export default function Chat() {
                     {msg.role === 'user' ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4 text-muted-foreground" />}
                   </div>
 
-                  {/* Content - Thinking process comes FIRST (before the reply) */}
+                  {/* Content */}
                   <div className={`flex-1 space-y-2 ${msg.role === 'user' ? 'flex flex-col items-end' : ''}`}>
-                    {/* Thinking Steps (for assistant messages) - shown BEFORE reply */}
-                    {msg.role === 'assistant' && msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
-                      <ThinkingProcess steps={msg.thinkingSteps} />
-                    )}
-
-                    {/* Tool Calls (for assistant messages) - shown BEFORE reply */}
+                    {/* Execution Process (for assistant messages) - shown BEFORE reply */}
                     {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
-                      <div className="space-y-2">
-                        {msg.toolCalls.map((tool) => (
-                          <ToolCallCard key={tool.id} tool={tool} />
-                        ))}
-                      </div>
+                      <ExecutionProcess toolCalls={msg.toolCalls} />
                     )}
 
                     {/* Message Bubble */}
@@ -718,48 +725,9 @@ export default function Chat() {
                 {/* Thinking indicator */}
                 <ThinkingIndicator progress={progress} currentStep={currentStep} />
 
-                {/* Active thinking steps */}
-                {thinkingSteps.length > 0 && (
-                  <div className="rounded-lg border border-primary/20 bg-primary/5 p-2 space-y-1.5">
-                    {thinkingSteps.map((step) => (
-                      <div
-                        key={step.id}
-                        className={`flex items-center gap-2 text-xs py-1 px-2 rounded ${
-                          step.status === 'running'
-                            ? 'bg-primary/10'
-                            : step.status === 'error'
-                            ? 'bg-red-500/10'
-                            : 'bg-muted/30'
-                        }`}
-                      >
-                        <div className={
-                          step.status === 'running' ? 'text-primary' :
-                          step.status === 'error' ? 'text-red-500' : 'text-green-500'
-                        }>
-                          {step.status === 'running' ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : step.status === 'error' ? (
-                            <XCircle className="h-3 w-3" />
-                          ) : (
-                            <CheckCircle className="h-3 w-3" />
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 text-muted-foreground">
-                          {getStepIcon(step.content)}
-                          <span className={step.status === 'running' ? 'text-foreground' : ''}>{step.content}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Active tool calls */}
+                {/* Active execution process with tool calls */}
                 {toolCalls.length > 0 && (
-                  <div className="space-y-2">
-                    {toolCalls.map((tool) => (
-                      <ToolCallCard key={tool.id} tool={tool} />
-                    ))}
-                  </div>
+                  <ExecutionProcess toolCalls={toolCalls} />
                 )}
               </div>
             </div>
@@ -777,7 +745,7 @@ export default function Chat() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={connected ? "输入消息... (Enter 发送)" : "连接中..."}
+            placeholder={connected ? `发送消息到 ${getSessionDisplayName(selectedSessionKey)}... (Enter 发送)` : "连接中..."}
             disabled={loading}
             className="input flex-1 h-11"
             onKeyDown={(e) => {
@@ -798,12 +766,6 @@ export default function Chat() {
               <Send className="h-4 w-4" />
             )}
           </button>
-        </div>
-
-        {/* Connection Status */}
-        <div className="flex items-center justify-center gap-2 mt-2 text-xs text-muted-foreground">
-          <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
-          {connected ? '已连接' : '连接中...'}
         </div>
       </form>
     </div>

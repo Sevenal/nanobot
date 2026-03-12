@@ -5,35 +5,51 @@
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Trash2, MessageSquare, Eye, Clock, Calendar } from 'lucide-react';
+import { Search, Trash2, MessageSquare, Eye, Clock, Calendar, Filter } from 'lucide-react';
 import { api } from '@/api/client';
-import type { Session } from '@/api/types';
+import type { Session, Channel } from '@/api/types';
+
+// Helper to extract channel from session key
+const getSessionChannel = (key: string): string => {
+  const parts = key.split(':');
+  return parts.length >= 2 ? parts[0] : 'unknown';
+};
 
 export default function Sessions() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [selectedChannel, setSelectedChannel] = useState<string>('all');
   const [page, setPage] = useState(0);
   const pageSize = 12;
 
   useEffect(() => {
-    const fetchSessions = async () => {
+    const fetchData = async () => {
       try {
-        const data = await api.listSessions({ limit: 100, offset: 0 });
-        setSessions(data.sessions);
+        // Load channels
+        const channelsData = await api.getChannels();
+        setChannels(channelsData.channels);
+
+        // Load sessions
+        const sessionsData = await api.listSessions({ limit: 100, offset: 0 });
+        setSessions(sessionsData.sessions);
       } catch (error) {
-        console.error('Failed to fetch sessions:', error);
+        console.error('Failed to fetch data:', error);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchSessions();
+    fetchData();
   }, []);
 
-  const filteredSessions = sessions.filter((session) =>
-    session.key.toLowerCase().includes(search.toLowerCase())
-  );
+  // Filter sessions by search term and channel
+  const filteredSessions = sessions.filter((session) => {
+    const matchesSearch = session.key.toLowerCase().includes(search.toLowerCase());
+    const matchesChannel = selectedChannel === 'all' || getSessionChannel(session.key) === selectedChannel;
+    return matchesSearch && matchesChannel;
+  });
 
   const paginatedSessions = filteredSessions.slice(page * pageSize, (page + 1) * pageSize);
 
@@ -88,9 +104,28 @@ export default function Sessions() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">会话</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            管理对话历史 · 共 {filteredSessions.length} 个会话
+            管理对话历史 · 共 {filteredSessions.length} 个会话{selectedChannel !== 'all' && ` · 已筛选: ${channels.find(c => c.id === selectedChannel)?.name || selectedChannel}`}
           </p>
         </div>
+        {/* Channel Filter */}
+        {channels.length > 0 && (
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <select
+              value={selectedChannel}
+              onChange={(e) => {
+                setSelectedChannel(e.target.value);
+                setPage(0); // Reset page when changing channel
+              }}
+              className="input w-32 text-sm"
+            >
+              <option value="all">全部渠道</option>
+              {channels.map((ch) => (
+                <option key={ch.id} value={ch.id}>{ch.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Search Bar */}
@@ -128,8 +163,11 @@ export default function Sessions() {
 
               {/* Content */}
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <h3 className="font-medium truncate">{session.key}</h3>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground border border-border/50">
+                    {getSessionChannel(session.key)}
+                  </span>
                   <span className="status-badge status-badge-online">
                     {session.message_count || 0} 消息
                   </span>

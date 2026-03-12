@@ -3,6 +3,7 @@
  */
 
 import type {
+  Channel,
   ConfigData,
   CronJob,
   Session,
@@ -88,6 +89,12 @@ class ApiClient {
     });
   }
 
+  async runCronJob(jobId: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/cron/jobs/${encodeURIComponent(jobId)}/run`, {
+      method: 'POST',
+    });
+  }
+
   // Tools
   async listTools(): Promise<{ tools: Tool[]; total: number }> {
     return this.request<{ tools: Tool[]; total: number }>('/tools');
@@ -125,6 +132,11 @@ class ApiClient {
     });
   }
 
+  // Channels
+  async getChannels(): Promise<{ channels: Channel[] }> {
+    return this.request<{ channels: Channel[] }>('/channels');
+  }
+
   // Status & Stats
   async getStatus(): Promise<SystemStatus> {
     return this.request<SystemStatus>('/status');
@@ -153,6 +165,10 @@ class SSEClient {
   private connectionChangeHandlers: ((connected: boolean) => void)[] = [];
   private manuallyDisconnected = false;
   private clientId: string;
+  // Event storage for persistence across page navigation
+  private events: Array<{ id: string; type: string; message: string; timestamp: Date }> = [];
+  private maxEvents = 1000;
+  private eventUpdateHandlers: ((events: typeof SSEClient.prototype.events) => void)[] = [];
 
   constructor(url: string = '/sse') {
     const protocol = window.location.protocol;
@@ -160,6 +176,42 @@ class SSEClient {
     this.url = `${protocol}//${host}${url}`;
     // Generate a persistent client ID for this session
     this.clientId = `sse_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  getEvents() {
+    return [...this.events];
+  }
+
+  clearEvents() {
+    this.events = [];
+    this.notifyEventUpdate();
+  }
+
+  onEventUpdate(handler: (events: typeof SSEClient.prototype.events) => void) {
+    this.eventUpdateHandlers.push(handler);
+    return () => {
+      const index = this.eventUpdateHandlers.indexOf(handler);
+      if (index > -1) {
+        this.eventUpdateHandlers.splice(index, 1);
+      }
+    };
+  }
+
+  private notifyEventUpdate() {
+    for (const handler of this.eventUpdateHandlers) {
+      handler(this.getEvents());
+    }
+  }
+
+  private addEvent(type: string, message: string) {
+    const event = {
+      id: `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      type,
+      message,
+      timestamp: new Date(),
+    };
+    this.events = [event, ...this.events].slice(0, this.maxEvents);
+    this.notifyEventUpdate();
   }
 
   connect(): void {
@@ -269,6 +321,11 @@ class SSEClient {
   }
 
   private handleMessage(message: WebSocketMessage): void {
+    // Store event (except ping/pong)
+    if (message.type && message.type !== 'ping' && message.type !== 'pong') {
+      this.addEvent(message.type, message.content || JSON.stringify(message));
+    }
+    // Call registered handler
     const handler = this.messageHandlers.get(message.type);
     if (handler) {
       handler(message);

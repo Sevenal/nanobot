@@ -1,68 +1,49 @@
 /**
- * Events page - Real-time event log
+ * Events page - Real-time event log with channel filtering
  * Linear/Vercel Style
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { Activity, Trash2 } from 'lucide-react';
-import { sse } from '@/api/client';
-
-interface EventEntry {
-  id: string;
-  type: string;
-  message: string;
-  timestamp: Date;
-}
+import { Activity, Trash2, Filter } from 'lucide-react';
+import { api, sse } from '@/api/client';
+import type { Channel } from '@/api/types';
 
 export default function Events() {
-  const [events, setEvents] = useState<EventEntry[]>([]);
+  const [events, setEvents] = useState(sse.getEvents());
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [selectedChannel, setSelectedChannel] = useState<string>('all');
   const [autoScroll, setAutoScroll] = useState(true);
   const [connected, setConnected] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Load channels
+    const loadChannels = async () => {
+      try {
+        const data = await api.getChannels();
+        setChannels(data.channels);
+      } catch (error) {
+        console.error('Failed to load channels:', error);
+      }
+    };
+    loadChannels();
+
     // Track connection status
     const unsubscribeConn = sse.onConnectionChange((isConnected) => {
       setConnected(isConnected);
     });
 
-    // Add initial event
-    const addEvent = (type: string, message: string) => {
-      const event: EventEntry = {
-        id: Date.now().toString(),
-        type,
-        message,
-        timestamp: new Date(),
-      };
-      setEvents((prev) => [event, ...prev].slice(0, 1000));
-    };
+    // Subscribe to event updates
+    const unsubscribeEvents = sse.onEventUpdate((newEvents) => {
+      setEvents(newEvents);
+    });
 
-    // Setup SSE message handler for all types
-    const handleMessage = (msg: any) => {
-      if (msg.type && msg.type !== 'ping' && msg.type !== 'pong') {
-        addEvent(msg.type, msg.content || JSON.stringify(msg));
-      }
-    };
-
-    const unsubMessage = sse.on('message', handleMessage);
-    const unsubProgress = sse.on('progress', handleMessage);
-    const unsubToolCall = sse.on('tool_call', handleMessage);
-    const unsubToolResult = sse.on('tool_result', handleMessage);
-    const unsubStatus = sse.on('status', handleMessage);
-    const unsubSystem = sse.on('system', handleMessage);
-
+    // Ensure SSE is connected
     sse.connect();
-
-    addEvent('system', '事件页面已初始化，等待事件...');
 
     return () => {
       unsubscribeConn();
-      unsubMessage();
-      unsubProgress();
-      unsubToolCall();
-      unsubToolResult();
-      unsubStatus();
-      unsubSystem();
+      unsubscribeEvents();
     };
   }, []);
 
@@ -71,6 +52,22 @@ export default function Events() {
       containerRef.current.scrollTop = 0;
     }
   }, [events, autoScroll]);
+
+  // Filter events by selected channel
+  const filteredEvents = selectedChannel === 'all'
+    ? events
+    : events.filter(event => {
+        // Parse channel from event metadata
+        try {
+          if (event.message.includes('"channel":')) {
+            const match = event.message.match(/"channel":\s*"([^"]+)"/);
+            return match && match[1] === selectedChannel;
+          }
+        } catch (e) {
+          // Ignore JSON parse errors
+        }
+        return false;
+      });
 
   const getEventColor = (type: string) => {
     switch (type) {
@@ -95,7 +92,7 @@ export default function Events() {
   };
 
   const clearEvents = () => {
-    setEvents([]);
+    sse.clearEvents();
   };
 
   return (
@@ -105,10 +102,25 @@ export default function Events() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">事件日志</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            来自 nanobot 的实时事件 · 共 {events.length} 条
+            来自 nanobot 的实时事件 · 共 {filteredEvents.length} 条{selectedChannel !== 'all' && ` · 已筛选: ${channels.find(c => c.id === selectedChannel)?.name || selectedChannel}`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Channel Filter */}
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <select
+              value={selectedChannel}
+              onChange={(e) => setSelectedChannel(e.target.value)}
+              className="input w-32 text-sm"
+            >
+              <option value="all">全部渠道</option>
+              {channels.map((ch) => (
+                <option key={ch.id} value={ch.id}>{ch.name}</option>
+              ))}
+            </select>
+          </div>
+
           <label className="flex items-center gap-2 text-sm btn btn-ghost cursor-pointer">
             <input
               type="checkbox"
@@ -137,13 +149,15 @@ export default function Events() {
       {/* Events List */}
       <div
         ref={containerRef}
-        className="card-elevated rounded-xl p-4 h-[calc(100vh-16rem)] overflow-y-auto scrollbar-thin font-mono text-sm bg-muted/30"
+        className="card-elevated rounded-xl p-4 h-[calc(100vh-18rem)] overflow-y-auto scrollbar-thin font-mono text-sm bg-muted/30"
       >
-        {events.length === 0 ? (
-          <div className="text-center text-muted-foreground py-12">暂无事件...</div>
+        {filteredEvents.length === 0 ? (
+          <div className="text-center text-muted-foreground py-12">
+            {selectedChannel === 'all' ? '暂无事件... 发送一条消息来开始' : `该渠道暂无事件`}
+          </div>
         ) : (
           <div className="space-y-1">
-            {events.map((event) => (
+            {filteredEvents.map((event) => (
               <div key={event.id} className="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-muted/50 transition-colors">
                 <span className="text-muted-foreground text-xs flex-shrink-0">{event.timestamp.toLocaleTimeString()}</span>
                 <span className={`text-xs font-medium uppercase flex-shrink-0 px-1.5 py-0.5 rounded border ${getEventBadge(event.type)}`}>

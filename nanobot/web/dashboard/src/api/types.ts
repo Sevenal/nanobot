@@ -13,6 +13,11 @@ export interface SessionDetail extends Session {
   messages: Message[];
 }
 
+export interface Channel {
+  id: string;
+  name: string;
+}
+
 export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
@@ -38,14 +43,21 @@ export interface CronJob {
   payload: CronPayload;
   enabled: boolean;
   created_at: string;
+  updated_at: string;
   next_run?: string;
+  // Execution state
+  last_run?: string;
+  last_status?: 'ok' | 'error' | 'skipped' | null;
+  last_error?: string | null;
+  delete_after_run?: boolean;
 }
 
 export interface CronPayload {
+  kind?: 'system_event' | 'agent_turn';
   message: string;
   deliver: boolean;
-  channel: string;
-  to: string;
+  channel?: string;
+  to?: string;
 }
 
 export interface Tool {
