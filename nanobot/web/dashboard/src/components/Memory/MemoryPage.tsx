@@ -1,10 +1,11 @@
 /**
  * Memory page - View and edit MEMORY.md and HISTORY.md
- * Linear/Vercel Style
+ * Linear/Vercel Style with markdown rendering
  */
 
 import { useEffect, useState } from 'react';
 import { Brain, History, Edit, Save, X, RefreshCw } from 'lucide-react';
+import Markdown from 'markdown-to-jsx';
 import { api } from '@/api/client';
 
 export default function Memory() {
@@ -203,8 +204,8 @@ export default function Memory() {
         ) : (
           <div className="p-6">
             {currentContent ? (
-              <div className="prose prose-sm max-w-none dark:prose-invert whitespace-pre-wrap">
-                {currentContent}
+              <div className="prose prose-sm max-w-none dark:prose-invert markdown-content">
+                <Markdown>{currentContent}</Markdown>
               </div>
             ) : (
               <div className="text-center text-muted-foreground py-12">

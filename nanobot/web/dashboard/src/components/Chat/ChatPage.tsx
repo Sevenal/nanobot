@@ -6,8 +6,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import {
-  Send, Bot, User, Loader2, Search, Download, Trash2, X,
-  MoreVertical, RefreshCw, ChevronDown, ChevronRight,
+  Send, Bot, User, Loader2, ChevronDown, ChevronRight,
   Terminal, Wrench, CheckCircle, XCircle, Zap,
   Braces, FileText, GitBranch, Sparkles
 } from 'lucide-react';
@@ -16,13 +15,81 @@ import { api, sse } from '@/api/client';
 import type { Message } from '@/api/types';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
 import python from 'highlight.js/lib/languages/python';
 import bash from 'highlight.js/lib/languages/bash';
+import json from 'highlight.js/lib/languages/json';
+import xml from 'highlight.js/lib/languages/xml';
+import css from 'highlight.js/lib/languages/css';
+import java from 'highlight.js/lib/languages/java';
+import cpp from 'highlight.js/lib/languages/cpp';
+import go from 'highlight.js/lib/languages/go';
+import rust from 'highlight.js/lib/languages/rust';
+import sql from 'highlight.js/lib/languages/sql';
+import yaml from 'highlight.js/lib/languages/yaml';
+import markdown from 'highlight.js/lib/languages/markdown';
 
 // Register languages for syntax highlighting
-hljs.registerLanguage('javascript', javascript);
-hljs.registerLanguage('python', python);
-hljs.registerLanguage('bash', bash);
+// Use safe registration that checks if language module is valid
+const safeRegister = (name: string, langModule: any) => {
+  try {
+    if (langModule && typeof langModule === 'object') {
+      hljs.registerLanguage(name, langModule);
+      return true;
+    }
+  } catch (e) {
+    console.warn(`Failed to register language: ${name}`, e);
+  }
+  return false;
+};
+
+// Language aliases map
+const languageAliases: Record<string, string> = {
+  'js': 'javascript',
+  'ts': 'typescript',
+  'py': 'python',
+  'sh': 'bash',
+  'shell': 'bash',
+  'yml': 'yaml',
+  'md': 'markdown',
+  'c++': 'cpp',
+};
+
+// Register primary languages
+safeRegister('javascript', javascript);
+safeRegister('typescript', typescript);
+safeRegister('python', python);
+safeRegister('bash', bash);
+safeRegister('json', json);
+safeRegister('xml', xml);
+safeRegister('html', xml);
+safeRegister('css', css);
+safeRegister('java', java);
+safeRegister('cpp', cpp);
+safeRegister('c', cpp);
+safeRegister('go', go);
+safeRegister('rust', rust);
+safeRegister('sql', sql);
+safeRegister('yaml', yaml);
+safeRegister('markdown', markdown);
+
+// Helper function to get valid language name
+const getValidLanguage = (lang: string): string => {
+  const normalized = lang.toLowerCase();
+  // Check if language exists
+  if (hljs.getLanguage(normalized)) {
+    return normalized;
+  }
+  // Check aliases
+  if (languageAliases[normalized]) {
+    const alias = languageAliases[normalized];
+    if (hljs.getLanguage(alias)) {
+      return alias;
+    }
+  }
+  // Fallback to plaintext (auto-detect)
+  return 'plaintext';
+};
 
 // Types for enhanced chat visualization
 interface ChatMessage {
@@ -52,12 +119,6 @@ interface ToolCallDisplay {
 
 const WEB_SESSION_KEY = 'web:web';
 
-const QUICK_COMMANDS = [
-  { label: '总结对话', prompt: '请总结我们当前的对话内容' },
-  { label: '帮助', prompt: '你能帮我做什么？' },
-  { label: '系统状态', prompt: '请告诉我当前系统状态' },
-];
-
 const DEFAULT_MESSAGE: ChatMessage = {
   role: 'system',
   content: '👋 欢迎使用 nanobot！我可以帮助你完成各种任务。'
@@ -74,6 +135,13 @@ const getStepIcon = (content: string) => {
   if (lower.includes('分支') || lower.includes('plan') || lower.includes('strategy')) return <GitBranch className="h-3.5 w-3.5" />;
   return <Zap className="h-3.5 w-3.5" />;
 };
+
+const Search = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <circle cx="11" cy="11" r="8" />
+    <path d="m21 21-4.3-4.3" />
+  </svg>
+);
 
 // Tool icon mapping
 const getToolIcon = (toolName: string) => {
@@ -244,9 +312,6 @@ export default function Chat() {
   const [currentStep, setCurrentStep] = useState('');
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
   const [toolCalls, setToolCalls] = useState<ToolCallDisplay[]>([]);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showActions, setShowActions] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -265,18 +330,10 @@ export default function Chat() {
 
   const { connected, sendMessage } = useWebSocket();
 
-  // Filter messages for search
-  const filteredMessages = searchQuery
-    ? messages.filter(msg =>
-        (msg.content && msg.content.toLowerCase().includes(searchQuery.toLowerCase())) ||
-        msg.role.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : messages;
-
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, progress, currentStep, thinkingSteps, toolCalls, searchQuery]);
+  }, [messages, progress, currentStep, thinkingSteps, toolCalls]);
 
   // Load session from backend on mount
   useEffect(() => {
@@ -287,20 +344,6 @@ export default function Chat() {
         if (session.messages && session.messages.length > 0) {
           // First, build a map of tool_call_id -> tool result
           const toolResults = new Map<string, { name: string; content: string; timestamp?: string }>();
-          for (const msg of session.messages) {
-            if (msg.role === 'tool' && msg.tool_call_id) {
-              toolResults.set(msg.tool_call_id, {
-                name: msg.name || 'unknown',
-                content: msg.content,
-                timestamp: msg.timestamp
-              });
-            }
-          }
-
-          // Then process messages and reconstruct tool calls
-          // We need to collect all tool calls and associate them with the final assistant message
-
-          // First pass: collect tool results and find which assistant messages have tool calls
           for (const msg of session.messages) {
             if (msg.role === 'tool' && msg.tool_call_id) {
               toolResults.set(msg.tool_call_id, {
@@ -365,7 +408,7 @@ export default function Chat() {
                     id: tc.id,
                     name: toolName,
                     arguments: args as Record<string, unknown>,
-                    status: toolResult ? 'completed' : 'completed',
+                    status: 'completed' as const,
                     result: toolResult?.content,
                     timestamp: msg.timestamp || new Date().toISOString(),
                   };
@@ -397,7 +440,6 @@ export default function Chat() {
                 let match;
                 while ((match = stepPattern.exec(msg.content)) !== null) {
                   // For historical messages, always use 'completed' status
-                  // (error status would only be for actual failed steps, which we don't track in history)
                   steps.push({
                     id: `history-${steps.length}-${Date.now()}`,
                     content: match[2],
@@ -529,137 +571,6 @@ export default function Chat() {
     };
   }, []);
 
-  // Refresh session from backend
-  const refreshSession = async () => {
-    try {
-      setLoadingSession(true);
-      const session = await api.getSession(WEB_SESSION_KEY);
-      if (session.messages && session.messages.length > 0) {
-        // First, build a map of tool_call_id -> tool result
-        const toolResults = new Map<string, { name: string; content: string; timestamp?: string }>();
-        for (const msg of session.messages) {
-          if (msg.role === 'tool' && msg.tool_call_id) {
-            toolResults.set(msg.tool_call_id, {
-              name: msg.name || 'unknown',
-              content: msg.content,
-              timestamp: msg.timestamp
-            });
-          }
-        }
-
-        // Process messages and reconstruct tool calls
-        let accumulatedToolCalls: ToolCallDisplay[] = [];
-
-        const chatMessages: ChatMessage[] = session.messages
-          .filter((msg: Message) => {
-            // Keep user messages and system messages always
-            if (msg.role === 'user' || msg.role === 'system') return true;
-            // Keep assistant messages if they have content OR have tool_calls
-            if (msg.role === 'assistant') {
-              return msg.content != null || (msg.tool_calls && msg.tool_calls.length > 0);
-            }
-            // Filter out tool messages
-            return false;
-          })
-          .map((msg: Message) => {
-            const chatMsg: ChatMessage = {
-              role: msg.role as 'user' | 'assistant' | 'system',
-              content: msg.content || '',
-              timestamp: msg.timestamp,
-            };
-
-            // Check if this assistant message has tool calls
-            if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-              const toolCallsForMsg = msg.tool_calls.map((tc): ToolCallDisplay => {
-                // Parse the function structure: tc.function.name, tc.function.arguments (as JSON string)
-                const func = (tc as any).function;
-                const toolName = func?.name || tc.name;
-                let args = tc.arguments;
-
-                // If arguments is a string, try to parse it
-                if (typeof args === 'string') {
-                  try {
-                    args = JSON.parse(args);
-                  } catch {
-                    args = { raw: args };
-                  }
-                } else if (func?.arguments) {
-                  // Arguments might be in the function object as a string
-                  if (typeof func.arguments === 'string') {
-                    try {
-                      args = JSON.parse(func.arguments);
-                    } catch {
-                      args = { raw: func.arguments };
-                    }
-                  } else {
-                    args = func.arguments;
-                  }
-                }
-
-                const toolResult = toolResults.get(tc.id);
-                return {
-                  id: tc.id,
-                  name: toolName,
-                  arguments: args as Record<string, unknown>,
-                  status: toolResult ? 'completed' : 'completed',
-                  result: toolResult?.content,
-                  timestamp: msg.timestamp || new Date().toISOString(),
-                };
-              });
-
-              // If this message has content, attach the tool calls to it
-              if (msg.content) {
-                chatMsg.toolCalls = toolCallsForMsg;
-              } else {
-                // This is an intermediate message with only tool calls
-                // Accumulate them for the next assistant message with content
-                accumulatedToolCalls.push(...toolCallsForMsg);
-                // Filter out this message since it has no content
-                return null;
-              }
-            }
-
-            // If we have accumulated tool calls and this message has content, attach them
-            if (chatMsg.content && accumulatedToolCalls.length > 0 && msg.role === 'assistant') {
-              chatMsg.toolCalls = accumulatedToolCalls;
-              accumulatedToolCalls = [];
-            }
-
-            // Parse thinking steps from content if it contains thinking markers
-            // For historical messages, all steps should be marked as completed
-            if (msg.role === 'assistant' && msg.content) {
-              const steps: ThinkingStep[] = [];
-              const stepPattern = /([✅❌⏳🔧📝✨])\s*([^\n]+)/g;
-              let match;
-              while ((match = stepPattern.exec(msg.content)) !== null) {
-                // For historical messages, always use 'completed' status
-                steps.push({
-                  id: `history-${Date.now()}-${steps.length}`,
-                  content: match[2],
-                  status: 'completed' as const,
-                  timestamp: msg.timestamp || new Date().toISOString(),
-                });
-              }
-              if (steps.length > 0) {
-                chatMsg.thinkingSteps = steps;
-              }
-            }
-
-            return chatMsg;
-          })
-          .filter((msg): msg is ChatMessage => msg !== null);  // Remove null messages
-
-        setMessages(chatMessages.length > 0 ? chatMessages : [DEFAULT_MESSAGE]);
-      } else {
-        setMessages([DEFAULT_MESSAGE]);
-      }
-    } catch (error) {
-      console.error('Failed to refresh session:', error);
-    } finally {
-      setLoadingSession(false);
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || loading) return;
@@ -680,54 +591,6 @@ export default function Chat() {
     });
   };
 
-  const handleQuickCommand = (prompt: string) => {
-    setInput(prompt);
-    inputRef.current?.focus();
-  };
-
-  const clearChat = async () => {
-    if (!confirm('确定要清空当前对话吗？清空后，对话历史将从服务器删除。')) return;
-
-    try {
-      await api.deleteSession(WEB_SESSION_KEY);
-      setMessages([{ role: 'system', content: '对话已清空' }]);
-      setSearchQuery('');
-      setThinkingSteps([]);
-      setToolCalls([]);
-    } catch (error) {
-      console.error('Failed to clear session:', error);
-      alert('清空对话失败');
-    }
-  };
-
-  const exportAsMarkdown = () => {
-    let markdown = '# nanobot 对话记录\n\n';
-    markdown += `导出时间: ${new Date().toLocaleString()}\n\n---\n\n`;
-
-    filteredMessages.forEach((msg) => {
-      const roleLabel = { user: '用户', assistant: '助手', system: '系统' }[msg.role] || msg.role;
-      markdown += `## ${roleLabel}\n\n${msg.content}\n\n`;
-    });
-
-    const blob = new Blob([markdown], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `chat-${Date.now()}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const exportAsJSON = () => {
-    const blob = new Blob([JSON.stringify(filteredMessages, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `chat-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const formatContent = (content: string | null | undefined) => {
     // Handle null/undefined content
     if (!content) {
@@ -735,28 +598,42 @@ export default function Chat() {
     }
     let formatted = content;
 
+    // Escape HTML function
+    const escapeHtml = (text: string) => {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    };
+
     // Code blocks with syntax highlighting
     formatted = formatted.replace(/```(\w+)?\n([\s\S]*?)```/g, (_match, lang, code) => {
-      const language = lang || 'text';
+      const originalLang = lang || 'text';
+      // Get valid language name
+      const validLanguage = getValidLanguage(originalLang);
+      const displayLanguage = originalLang || 'plaintext';
+
       try {
-        const highlighted = hljs.highlight(code, { language }).value;
+        const highlighted = hljs.highlight(code, { language: validLanguage }).value;
         return `
           <div class="group relative my-2">
             <div class="flex items-center justify-between bg-muted/50 px-3 py-1.5 rounded-t text-xs text-muted-foreground border border-border/50">
-              <span class="font-mono">${language}</span>
+              <span class="font-mono">${escapeHtml(displayLanguage)}</span>
             </div>
-            <pre class="bg-muted/30 p-3 rounded-b overflow-x-auto text-sm"><code class="hljs language-${language}">${highlighted}</code></pre>
+            <pre class="bg-muted/30 p-3 rounded-b overflow-x-auto text-sm"><code class="hljs language-${validLanguage}">${highlighted}</code></pre>
           </div>
         `;
       } catch {
-        return `<pre class="bg-muted/30 p-3 rounded text-sm"><code>${code}</code></pre>`;
+        // Fallback: escape and display as plain code
+        return `<pre class="bg-muted/30 p-3 rounded overflow-x-auto text-sm"><code>${escapeHtml(code)}</code></pre>`;
       }
     });
 
-    // Inline code
-    formatted = formatted.replace(/`([^`]+)`/g, '<code class="bg-muted/50 px-1.5 py-0.5 rounded text-sm font-mono text-blue-600 dark:text-blue-400">$1</code>');
+    // Inline code (process before line breaks to avoid conflicts)
+    formatted = formatted.replace(/`([^`\n]+)`/g, (_match, code) => {
+      return `<code class="bg-muted/50 px-1.5 py-0.5 rounded text-sm font-mono text-blue-600 dark:text-blue-400">${escapeHtml(code)}</code>`;
+    });
 
-    // Line breaks
+    // Line breaks (but not in code blocks - already handled)
     formatted = formatted.replace(/\n/g, '<br>');
 
     return formatted;
@@ -775,98 +652,10 @@ export default function Chat() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] flex flex-col">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between py-2">
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setSearchOpen(!searchOpen)}
-            className={`icon-btn ${searchOpen ? 'bg-accent text-accent-foreground' : ''}`}
-            title="搜索"
-          >
-            <Search className="h-4 w-4" />
-          </button>
-          <button
-            onClick={refreshSession}
-            className="icon-btn"
-            title="刷新对话"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
-          <button
-            onClick={clearChat}
-            className="icon-btn text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20"
-            title="清空对话"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={exportAsMarkdown}
-            className="icon-btn"
-            title="导出 Markdown"
-          >
-            <Download className="h-4 w-4" />
-            <span className="hidden sm:inline ml-1.5 text-xs">MD</span>
-          </button>
-          <button
-            onClick={exportAsJSON}
-            className="icon-btn"
-            title="导出 JSON"
-          >
-            <Download className="h-4 w-4" />
-            <span className="hidden sm:inline ml-1.5 text-xs">JSON</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Search Bar */}
-      {searchOpen && (
-        <div className="fade-in">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-            <input
-              type="text"
-              placeholder="搜索消息内容..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="input h-9 pl-9 pr-8"
-              autoFocus
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground mt-1">
-            找到 {filteredMessages.length} 条结果
-          </p>
-        </div>
-      )}
-
-      {/* Quick Commands */}
-      {!searchOpen && (
-        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin -mx-4 px-4">
-          {QUICK_COMMANDS.map((cmd) => (
-            <button
-              key={cmd.label}
-              onClick={() => handleQuickCommand(cmd.prompt)}
-              className="whitespace-nowrap btn btn-ghost text-xs h-8 px-3"
-            >
-              {cmd.label}
-            </button>
-          ))}
-        </div>
-      )}
-
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto rounded-xl border border-border/50 bg-card/50 backdrop-blur-sm p-4">
         <div className="space-y-4">
-          {filteredMessages.map((msg, idx) => (
+          {messages.map((msg, idx) => (
             <div
               key={idx}
               className={`fade-in ${msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'}`}
@@ -982,37 +771,22 @@ export default function Chat() {
 
       {/* Input Area */}
       <form onSubmit={handleSubmit} className="pt-2">
-        <div className="relative flex items-end gap-2">
-          <div className="flex-1 relative">
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={connected ? "输入消息..." : "连接中..."}
-              disabled={loading}
-              className="input pr-12 h-11 resize-none"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  if (input.trim() && !loading) {
-                    const formEvent = new Event('submit', { bubbles: true, cancelable: true });
-                    e.currentTarget.dispatchEvent(formEvent);
-                  }
-                }
-              }}
-            />
-            {/* Action button */}
-            <div className="absolute right-2 top-1/2 -translate-y-1/2">
-              <button
-                type="button"
-                onClick={() => setShowActions(!showActions)}
-                className="icon-btn h-7 w-7"
-              >
-                <MoreVertical className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
+        <div className="flex items-end gap-2">
+          <input
+            ref={inputRef}
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={connected ? "输入消息... (Enter 发送)" : "连接中..."}
+            disabled={loading}
+            className="input flex-1 h-11"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit(e);
+              }
+            }}
+          />
           <button
             type="submit"
             disabled={loading || !input.trim()}

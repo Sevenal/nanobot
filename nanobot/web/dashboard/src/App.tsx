@@ -5,10 +5,9 @@
 
 import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Menu, X, Sun, Moon, Layout, MessageSquare, Calendar, Brain, Settings, Activity, Zap, Server, Users } from 'lucide-react';
+import { Menu, X, Sun, Moon, MessageSquare, Calendar, Brain, Settings, Activity, Zap, Server, Users } from 'lucide-react';
 
 // Pages
-import Dashboard from '@/components/Dashboard/DashboardPage';
 import Sessions from '@/components/Sessions/SessionsPage';
 import SessionDetail from '@/components/Sessions/SessionDetailPage';
 import Chat from '@/components/Chat/ChatPage';
@@ -44,8 +43,7 @@ function AppContent() {
   }, [darkMode]);
 
   const navigation = [
-    { name: '仪表盘', href: '/', icon: Layout },
-    { name: '会话', href: '/sessions', icon: MessageSquare },
+    { name: '会话', href: '/', icon: MessageSquare },
     { name: '聊天', href: '/chat', icon: MessageSquare },
     { name: '定时任务', href: '/cron', icon: Calendar },
     { name: '记忆', href: '/memory', icon: Brain },
@@ -148,7 +146,7 @@ function AppContent() {
                 {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
               </button>
               <h1 className="text-sm font-medium text-muted-foreground">
-                {navigation.find((n) => n.href === location.pathname)?.name || '仪表盘'}
+                {navigation.find((n) => n.href === location.pathname)?.name || '会话'}
               </h1>
             </div>
           </div>
@@ -157,7 +155,7 @@ function AppContent() {
         {/* Page Content */}
         <main className="p-4 lg:p-6">
           <Routes>
-            <Route path="/" element={<Dashboard />} />
+            <Route path="/" element={<Sessions />} />
             <Route path="/sessions" element={<Sessions />} />
             <Route path="/sessions/:key" element={<SessionDetail />} />
             <Route path="/chat" element={<Chat />} />

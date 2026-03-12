@@ -214,6 +214,27 @@ class WebChannel(BaseChannel):
                 raise HTTPException(status_code=503, detail="Session manager not available")
 
             sessions = self._session_manager.list_sessions()
+            # Add message_count to each session by counting lines in the file
+            for session in sessions:
+                try:
+                    session_path = session.get("path")
+                    if session_path:
+                        with open(session_path, encoding="utf-8") as f:
+                            # Count non-empty lines, excluding the metadata line
+                            count = 0
+                            for line in f:
+                                line = line.strip()
+                                if line:
+                                    try:
+                                        data = json.loads(line)
+                                        if data.get("_type") != "metadata":
+                                            count += 1
+                                    except json.JSONDecodeError:
+                                        pass
+                            session["message_count"] = count
+                except Exception:
+                    session["message_count"] = 0
+
             return {
                 "total": len(sessions),
                 "sessions": sessions[offset:offset + limit]
