@@ -81,6 +81,9 @@ packages = ["nanobot"]
 "nanobot" = "nanobot"
 
 # Include non-Python files in skills and templates
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build]
 include = [
     "nanobot/**/*.py",

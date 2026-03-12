@@ -1,25 +1,23 @@
 /**
- * Config page - Card-style configuration editor
- * Linear/Vercel Style - Similar to Tools page
- * Shows flattened nested config items, providers grouped by provider name
+ * Config page - Simplified module-based configuration editor
+ * Groups configs by logical modules (channels, providers, etc.)
+ * Each module is a card that opens a full editor
  */
 
-import { useEffect, useState, createElement } from 'react';
-import { Save, RefreshCw, Settings, Eye, EyeOff, Search, AlertTriangle, Trash2, X, FileText, Lock, Database, MessageCircle, Cpu, Globe, ChevronDown, ChevronRight } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Save, RefreshCw, Eye, EyeOff, Search, AlertTriangle, X, Lock, Database, MessageCircle, Cpu, Wrench, Server, Edit2 } from 'lucide-react';
 import { api } from '@/api/client';
 import type { ConfigData } from '@/api/types';
 
-// Secret key patterns to detect sensitive data
+// Secret key patterns
 const SECRET_PATTERNS = [
   /password/i, /secret/i, /token/i, /key/i, /api/i, /credential/i
 ];
 
-// Check if a key might contain sensitive data
 const isSecretKey = (key: string): boolean => {
   return SECRET_PATTERNS.some(pattern => pattern.test(key));
 };
 
-// Get display label for config keys
 const formatKeyLabel = (key: string): string => {
   return key
     .replace(/_/g, ' ')
@@ -28,76 +26,281 @@ const formatKeyLabel = (key: string): string => {
     .replace(/^\w/, c => c.toUpperCase());
 };
 
-// Get icon for config section/key
-const getConfigIcon = (_section: string, key: string) => {
-  const keyLower = key.toLowerCase();
-  if (keyLower.includes('url') || keyLower.includes('endpoint') || keyLower.includes('host')) return Globe;
-  if (keyLower.includes('model') || keyLower.includes('provider')) return Cpu;
-  if (keyLower.includes('channel') || keyLower.includes('webhook') || keyLower.includes('token')) return MessageCircle;
-  if (keyLower.includes('password') || keyLower.includes('secret')) return Lock;
-  return FileText;
+// Module definitions with their field configurations
+const MODULE_DEFINITIONS = {
+  agents: {
+    icon: Cpu,
+    label: 'AI 助手',
+    description: '模型与行为配置',
+    color: 'blue',
+    fields: [
+      { key: 'model', label: '模型', type: 'text' as const, placeholder: 'anthropic/claude-opus-4-5' },
+      { key: 'provider', label: '提供商', type: 'text' as const, placeholder: 'auto' },
+      { key: 'maxTokens', label: '最大输出令牌', type: 'number' as const, default: 8192 },
+      { key: 'contextWindowTokens', label: '上下文窗口', type: 'number' as const, default: 65536 },
+      { key: 'temperature', label: '温度', type: 'number' as const, step: 0.1, default: 0.1 },
+      { key: 'maxToolIterations', label: '最大工具迭代', type: 'number' as const, default: 40 },
+      { key: 'workspace', label: '工作空间', type: 'text' as const, default: '~/.nanobot/workspace' },
+    ],
+    nestedPath: 'defaults',
+  },
+  providers: {
+    icon: Database,
+    label: 'API 提供商',
+    description: '各平台 API 密钥配置',
+    color: 'green',
+    isProviderList: true,
+  },
+  channels: {
+    icon: MessageCircle,
+    label: '通信频道',
+    description: '聊天平台接入配置',
+    color: 'purple',
+    isChannelList: true,
+  },
+  tools: {
+    icon: Wrench,
+    label: '工具设置',
+    description: 'Web 搜索、命令执行等',
+    color: 'orange',
+    fields: [
+      { key: 'restrictToWorkspace', label: '限制访问工作空间', type: 'boolean' as const },
+    ],
+    nested: {
+      web: {
+        label: 'Web 工具',
+        fields: [
+          { key: 'proxy', label: '代理 URL', type: 'text' as const, placeholder: 'http://127.0.0.1:7890' },
+        ],
+        nested: {
+          search: {
+            label: '搜索配置',
+            fields: [
+              { key: 'apiKey', label: 'Brave API Key', type: 'password' as const },
+              { key: 'maxResults', label: '最大结果数', type: 'number' as const, default: 5 },
+            ],
+          },
+        },
+      },
+      exec: {
+        label: '命令执行',
+        fields: [
+          { key: 'timeout', label: '超时(秒)', type: 'number' as const, default: 60 },
+          { key: 'pathAppend', label: '附加路径', type: 'text' as const },
+        ],
+      },
+    },
+  },
+  gateway: {
+    icon: Server,
+    label: '网关服务',
+    description: '服务器与心跳配置',
+    color: 'slate',
+    fields: [
+      { key: 'host', label: '监听地址', type: 'text' as const, default: '0.0.0.0' },
+      { key: 'port', label: '监听端口', type: 'number' as const, default: 18790 },
+    ],
+    nested: {
+      heartbeat: {
+        label: '心跳服务',
+        fields: [
+          { key: 'enabled', label: '启用心跳', type: 'boolean' as const, default: true },
+          { key: 'intervalS', label: '间隔(秒)', type: 'number' as const, default: 1800 },
+        ],
+      },
+    },
+  },
 };
 
-// Value type detection
-const getValueType = (value: unknown): 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' => {
-  if (value === null) return 'null';
-  if (Array.isArray(value)) return 'array';
-  return typeof value as 'string' | 'number' | 'boolean' | 'object';
+// Channel configurations
+const CHANNEL_CONFIGS: Record<string, {
+  label: string;
+  description: string;
+  fields: Array<{
+    key: string;
+    label: string;
+    type: 'text' | 'number' | 'boolean' | 'password' | 'select';
+    placeholder?: string;
+    default?: string | number | boolean;
+    options?: string[];
+  }>;
+}> = {
+  whatsapp: {
+    label: 'WhatsApp',
+    description: '通过 WhatsApp 桥接服务接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'bridgeUrl', label: '桥接服务 URL', type: 'text', default: 'ws://localhost:3001' },
+      { key: 'bridgeToken', label: '桥接令牌', type: 'password' },
+    ],
+  },
+  telegram: {
+    label: 'Telegram',
+    description: 'Telegram 机器人接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'token', label: 'Bot Token', type: 'password', placeholder: '从 @BotFather 获取' },
+      { key: 'proxy', label: '代理', type: 'text', placeholder: 'socks5://127.0.0.1:1080' },
+      { key: 'replyToMessage', label: '回复引用原消息', type: 'boolean', default: false },
+      { key: 'groupPolicy', label: '群组策略', type: 'select', options: ['mention', 'open'], default: 'mention' },
+    ],
+  },
+  discord: {
+    label: 'Discord',
+    description: 'Discord 机器人接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'token', label: 'Bot Token', type: 'password' },
+      { key: 'gatewayUrl', label: 'Gateway URL', type: 'text', default: 'wss://gateway.discord.gg/?v=10&encoding=json' },
+      { key: 'groupPolicy', label: '群组策略', type: 'select', options: ['mention', 'open'], default: 'mention' },
+    ],
+  },
+  feishu: {
+    label: '飞书',
+    description: '飞书/Lark 机器人接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'appId', label: 'App ID', type: 'password' },
+      { key: 'appSecret', label: 'App Secret', type: 'password' },
+      { key: 'encryptKey', label: '加密密钥', type: 'password' },
+      { key: 'verificationToken', label: '验证令牌', type: 'password' },
+      { key: 'reactEmoji', label: '反应表情', type: 'text', default: 'THUMBSUP' },
+    ],
+  },
+  dingtalk: {
+    label: '钉钉',
+    description: '钉钉机器人接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'clientId', label: 'Client ID (AppKey)', type: 'password' },
+      { key: 'clientSecret', label: 'Client Secret', type: 'password' },
+    ],
+  },
+  slack: {
+    label: 'Slack',
+    description: 'Slack 机器人接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'mode', label: '模式', type: 'text', default: 'socket' },
+      { key: 'botToken', label: 'Bot Token', type: 'password', placeholder: 'xoxb-...' },
+      { key: 'appToken', label: 'App Token', type: 'password', placeholder: 'xapp-...' },
+      { key: 'replyInThread', label: '线程回复', type: 'boolean', default: true },
+      { key: 'reactEmoji', label: '反应表情', type: 'text', default: 'eyes' },
+      { key: 'groupPolicy', label: '群组策略', type: 'select', options: ['mention', 'open', 'allowlist'], default: 'mention' },
+    ],
+  },
+  qq: {
+    label: 'QQ',
+    description: 'QQ 机器人接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'appId', label: 'App ID', type: 'password' },
+      { key: 'secret', label: 'App Secret', type: 'password' },
+    ],
+  },
+  wecom: {
+    label: '企业微信',
+    description: '企业微信 AI 机器人接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'botId', label: 'Bot ID', type: 'password' },
+      { key: 'secret', label: 'Bot Secret', type: 'password' },
+      { key: 'welcomeMessage', label: '欢迎消息', type: 'text' },
+    ],
+  },
+  email: {
+    label: '邮件',
+    description: 'IMAP + SMTP 邮件接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'consentGranted', label: '同意访问邮箱', type: 'boolean' },
+      { key: 'imapHost', label: 'IMAP 服务器', type: 'text' },
+      { key: 'imapPort', label: 'IMAP 端口', type: 'number', default: 993 },
+      { key: 'imapUsername', label: 'IMAP 用户名', type: 'text' },
+      { key: 'imapPassword', label: 'IMAP 密码', type: 'password' },
+      { key: 'smtpHost', label: 'SMTP 服务器', type: 'text' },
+      { key: 'smtpPort', label: 'SMTP 端口', type: 'number', default: 587 },
+      { key: 'smtpUsername', label: 'SMTP 用户名', type: 'text' },
+      { key: 'smtpPassword', label: 'SMTP 密码', type: 'password' },
+      { key: 'fromAddress', label: '发件地址', type: 'text' },
+      { key: 'autoReplyEnabled', label: '自动回复', type: 'boolean', default: true },
+    ],
+  },
+  web: {
+    label: 'Web 面板',
+    description: 'Web 控制面板接入',
+    fields: [
+      { key: 'enabled', label: '启用', type: 'boolean' },
+      { key: 'host', label: '监听地址', type: 'text', default: '127.0.0.1' },
+      { key: 'port', label: '监听端口', type: 'number', default: 8080 },
+      { key: 'authToken', label: '认证令牌', type: 'password' },
+    ],
+  },
 };
 
-// Get value preview
-const getValuePreview = (value: unknown, maxLength = 60): string => {
-  const type = getValueType(value);
+// Provider configurations - keys match actual config file (camelCase from Python alias_generator)
+interface ProviderInfo {
+  label: string;
+  color: string;
+  isOAuth?: boolean;
+}
 
-  if (type === 'null') return 'null';
-  if (type === 'boolean') return value ? '启用' : '禁用';
-  if (type === 'array') return `[${(value as unknown[]).length} 项]`;
-  if (type === 'object') return `{${Object.keys(value as Record<string, unknown>).length} 键}`;
-  if (type === 'string') {
-    const str = String(value);
-    return str.length > maxLength ? str.substring(0, maxLength) + '...' : str;
-  }
-  return String(value);
-};
-
-// Section icons
-const SECTION_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  agents: Cpu,
-  channels: MessageCircle,
-  providers: Database,
-  tools: Settings,
-  gateway: Globe,
+const PROVIDER_CONFIGS: Record<string, ProviderInfo> = {
+  custom: { label: '自定义 API', color: 'gray' },
+  azureOpenai: { label: 'Azure OpenAI', color: 'sky' },
+  anthropic: { label: 'Anthropic', color: 'orange' },
+  openai: { label: 'OpenAI', color: 'green' },
+  openrouter: { label: 'OpenRouter', color: 'blue' },
+  deepseek: { label: 'DeepSeek', color: 'cyan' },
+  groq: { label: 'Groq', color: 'purple' },
+  zhipu: { label: '智谱 AI', color: 'indigo' },
+  dashscope: { label: '阿里云通义', color: 'orange' },
+  vllm: { label: 'vLLM', color: 'indigo' },
+  gemini: { label: 'Google Gemini', color: 'blue' },
+  moonshot: { label: 'Moonshot', color: 'slate' },
+  minimax: { label: 'MiniMax', color: 'pink' },
+  siliconflow: { label: '硅基流动', color: 'violet' },
+  volcengine: { label: '火山引擎', color: 'red' },
+  ollama: { label: 'Ollama (本地)', color: 'emerald' },
+  aihubmix: { label: 'AiHubMix', color: 'amber' },
+  openaiCodex: { label: 'OpenAI Codex (OAuth)', color: 'green', isOAuth: true },
+  githubCopilot: { label: 'GitHub Copilot (OAuth)', color: 'gray', isOAuth: true },
 };
 
 interface ConfigItem {
   key: string;
-  path: string[];
-  value: unknown;
-  type: string;
-  isSecret: boolean;
-  section: string;
-  displayKey: string;
-  providerName?: string; // For providers section
-  modelName?: string; // For provider models
+  label: string;
+  type: 'text' | 'number' | 'boolean' | 'password' | 'select' | 'object' | 'array';
+  placeholder?: string;
+  default?: unknown;
+  step?: number;
+  options?: string[];
+  path?: string[];
 }
 
-interface ProviderGroup {
-  name: string;
-  config: Record<string, unknown>;
-  models: Array<{ name: string; config: Record<string, unknown> }>;
+interface ModuleConfig {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  description: string;
+  color: string;
+  fields?: ConfigItem[];
+  nested?: Record<string, ModuleConfig>;
+  nestedPath?: string;
+  isProviderList?: boolean;
+  isChannelList?: boolean;
+  path?: string[];
 }
 
 export default function Config() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<string>('channels');
   const [hasChanges, setHasChanges] = useState(false);
   const [editConfig, setEditConfig] = useState<ConfigData | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedItem, setSelectedItem] = useState<ConfigItem | null>(null);
+  const [editingModule, setEditingModule] = useState<string | null>(null);
+  const [editingSubKey, setEditingSubKey] = useState<string | null>(null);
   const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set());
-  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const fetchConfig = async () => {
@@ -152,299 +355,388 @@ export default function Config() {
     }
   };
 
-  // Update nested config value
-  const updateConfigValue = (path: string[], value: unknown) => {
-    if (!editConfig) return;
-    const section = activeSection;
-    const sectionData = JSON.parse(JSON.stringify(editConfig[section as keyof ConfigData] || {}));
+  // Get value from config by path
+  const getValueByPath = (obj: unknown, path: string[]): unknown => {
+    let current: unknown = obj;
+    for (const key of path) {
+      if (current && typeof current === 'object' && key in current) {
+        current = (current as Record<string, unknown>)[key];
+      } else {
+        return undefined;
+      }
+    }
+    return current;
+  };
 
-    let current: Record<string, unknown> = sectionData;
+  // Set value in config by path
+  const setValueByPath = (obj: ConfigData, path: string[], value: unknown): void => {
+    let current: Record<string, unknown> = obj as Record<string, unknown>;
     for (let i = 0; i < path.length - 1; i++) {
-      const part = path[i];
-      if (!current[part] || typeof current[part] !== 'object') {
-        current[part] = {};
+      const key = path[i];
+      if (!(key in current) || typeof current[key] !== 'object') {
+        current[key] = {};
       }
-      current = current[part] as Record<string, unknown>;
+      current = current[key] as Record<string, unknown>;
     }
-
     current[path[path.length - 1]] = value;
-    setEditConfig({ ...editConfig, [section]: sectionData });
   };
 
-  // Delete config item
-  const deleteConfigItem = (path: string[]) => {
-    if (!editConfig) return;
-    const section = activeSection;
-    const sectionData = JSON.parse(JSON.stringify(editConfig[section as keyof ConfigData] || {}));
+  // Get module status summary
+  const getModuleStatus = (moduleKey: string): { enabled: number; total: number; showCount: boolean } => {
+    if (!editConfig) return { enabled: 0, total: 0, showCount: false };
 
-    if (path.length === 1) {
-      delete sectionData[path[0]];
-    } else {
-      let current: Record<string, unknown> = sectionData;
-      for (let i = 0; i < path.length - 1; i++) {
-        if (current[path[i]] && typeof current[path[i]] === 'object') {
-          current = current[path[i]] as Record<string, unknown>;
-        }
-      }
-      if (current[path[path.length - 1]]) {
-        delete current[path[path.length - 1]];
-      }
+    if (moduleKey === 'channels') {
+      const channels = editConfig.channels as Record<string, Record<string, unknown>> || {};
+      const channelKeys = Object.keys(CHANNEL_CONFIGS);
+      const enabled = channelKeys.filter(k => (channels[k] as Record<string, unknown>)?.enabled === true).length;
+      return { enabled, total: channelKeys.length, showCount: true };
     }
 
-    setEditConfig({ ...editConfig, [section]: sectionData });
-  };
-
-  const sections = [
-    { id: 'agents', label: '代理', description: 'AI 助手配置' },
-    { id: 'channels', label: '频道', description: '通信渠道设置' },
-    { id: 'providers', label: '提供商', description: 'LLM 提供商 API' },
-    { id: 'tools', label: '工具', description: '可用工具配置' },
-    { id: 'gateway', label: '网关', description: '网关服务设置' },
-  ];
-
-  // Get provider groups for providers section
-  const getProviderGroups = (): ProviderGroup[] => {
-    if (!editConfig || activeSection !== 'providers') return [];
-    const providersData = editConfig.providers as Record<string, unknown> || {};
-    const groups: ProviderGroup[] = [];
-
-    for (const [providerName, providerConfig] of Object.entries(providersData)) {
-      if (typeof providerConfig !== 'object' || providerConfig === null) continue;
-
-      const config = providerConfig as Record<string, unknown>;
-      const models: Array<{ name: string; config: Record<string, unknown> }> = [];
-
-      // Extract models if they exist
-      if (config.models && typeof config.models === 'object') {
-        const modelsData = config.models as Record<string, unknown>;
-        for (const [modelName, modelConfig] of Object.entries(modelsData)) {
-          if (typeof modelConfig === 'object' && modelConfig !== null) {
-            models.push({ name: modelName, config: modelConfig as Record<string, unknown> });
-          }
-        }
-      }
-
-      groups.push({
-        name: providerName,
-        config: config,
-        models: models,
-      });
+    if (moduleKey === 'providers') {
+      const providers = editConfig.providers as Record<string, Record<string, unknown>> || {};
+      const providerKeys = Object.keys(PROVIDER_CONFIGS);
+      // Support both camelCase (apiKey, apiBase) and snake_case (api_key, api_base)
+      const configured = providerKeys.filter(k => {
+        const p = providers[k] as Record<string, unknown> | undefined;
+        if (!p) return false;
+        const apiKey = (p.apiKey ?? p.api_key) as string | undefined;
+        const apiBase = (p.apiBase ?? p.api_base) as string | undefined;
+        return apiKey && apiKey.trim() !== '' || apiBase && apiBase.trim() !== '';
+      }).length;
+      return { enabled: configured, total: providerKeys.length, showCount: true };
     }
 
-    return groups.filter(group =>
-      group.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      group.models.some(m => m.name.toLowerCase().includes(searchQuery.toLowerCase()))
-    );
+    // For agents, tools, gateway - don't show count, just check if configured
+    return { enabled: 0, total: 0, showCount: false };
   };
 
-  // Get flattened config items for non-providers sections
-  const getConfigItems = (): ConfigItem[] => {
-    if (!editConfig || activeSection === 'providers') return [];
-    const sectionData = editConfig[activeSection as keyof ConfigData] as Record<string, unknown> || {};
-    const items: ConfigItem[] = [];
-
-    const flatten = (obj: Record<string, unknown>, path: string[] = []) => {
-      for (const [key, value] of Object.entries(obj)) {
-        const currentPath = [...path, key];
-        const type = getValueType(value);
-
-        if (type === 'object' && value !== null && !Array.isArray(value)) {
-          const nestedObj = value as Record<string, unknown>;
-          // Show enabled field prominently
-          if (nestedObj.enabled !== undefined) {
-            items.push({
-              key: key,
-              path: [...path, key, 'enabled'],
-              value: nestedObj.enabled,
-              type: 'boolean',
-              isSecret: false,
-              section: activeSection,
-              displayKey: [...path, key, 'enabled'].join('.'),
-            });
-          }
-          // Show other fields
-          for (const [subKey, subValue] of Object.entries(nestedObj)) {
-            if (subKey === 'enabled') continue;
-            items.push({
-              key: subKey,
-              path: [...path, key, subKey],
-              value: subValue,
-              type: getValueType(subValue),
-              isSecret: isSecretKey(subKey),
-              section: activeSection,
-              displayKey: [...path, key, subKey].join('.'),
-            });
-          }
-        } else {
-          items.push({
-            key: key,
-            path: currentPath,
-            value: value,
-            type: type,
-            isSecret: isSecretKey(key),
-            section: activeSection,
-            displayKey: currentPath.join('.'),
-          });
-        }
-      }
-    };
-
-    flatten(sectionData);
-
-    return items.filter(item =>
-      item.displayKey.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  };
-
-  const providerGroups = getProviderGroups();
-  const configItems = getConfigItems();
-
-  const toggleProviderExpanded = (providerName: string) => {
-    setExpandedProviders(prev => {
-      const next = new Set(prev);
-      if (next.has(providerName)) {
-        next.delete(providerName);
-      } else {
-        next.add(providerName);
-      }
-      return next;
-    });
-  };
-
-  // Value editor component for modal
-  const ValueEditor = ({ item, onClose }: { item: ConfigItem; onClose: () => void }) => {
-    const [editValue, setEditValue] = useState<string>('');
-
-    useEffect(() => {
-      if (item.type === 'object' || item.type === 'array') {
-        setEditValue(JSON.stringify(item.value, null, 2));
-      } else {
-        setEditValue(String(item.value ?? ''));
-      }
-    }, [item]);
-
-    const handleSave = () => {
-      let parsedValue: unknown = editValue;
-
-      if (item.type === 'number') {
-        parsedValue = Number(editValue) || 0;
-      } else if (item.type === 'boolean') {
-        parsedValue = editValue === 'true';
-      } else if (item.type === 'object' || item.type === 'array') {
-        try {
-          parsedValue = JSON.parse(editValue);
-        } catch {
-          alert('JSON 格式错误');
-          return;
-        }
-      }
-
-      updateConfigValue(item.path, parsedValue);
-      onClose();
-    };
-
-    const isSecretVisible = visibleSecrets.has(item.displayKey);
+  // Render field editor
+  const renderField = (
+    field: ConfigItem,
+    value: unknown,
+    onChange: (val: unknown) => void,
+    fullPath: string[]
+  ) => {
+    const isSecret = isSecretKey(field.key);
+    const isVisible = visibleSecrets.has(fullPath.join('.'));
+    const displayValue = value ?? field.default ?? '';
 
     return (
-      <div className="space-y-4">
-        {/* Header */}
-        <div className="flex items-center gap-3 pb-4 border-b border-border/50">
-          <div className="rounded-md border border-border bg-muted/50 p-2">
-            {createElement(getConfigIcon(item.section, item.key), { className: "h-4 w-4 text-muted-foreground" })}
-          </div>
-          <div className="flex-1">
-            <h3 className="font-semibold">{formatKeyLabel(item.path[item.path.length - 1])}</h3>
-            <p className="text-xs text-muted-foreground font-mono">{item.displayKey}</p>
-          </div>
-        </div>
+      <div key={field.key} className="space-y-1.5">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          {field.label}
+          {isSecret && <Lock className="h-3.5 w-3.5 text-orange-500" />}
+        </label>
 
-        {/* Type Badge */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
-            类型: {item.type}
-          </span>
-          {item.isSecret && (
-            <span className="text-xs px-2 py-1 rounded-full bg-orange-500/10 text-orange-600 flex items-center gap-1">
-              <Lock className="h-3 w-3" />
-              敏感信息
-            </span>
-          )}
-        </div>
-
-        {/* Editor */}
-        <div className="space-y-2">
-          {item.type === 'boolean' ? (
-            <label className="flex items-center gap-3 cursor-pointer p-4 border border-border/50 rounded-lg hover:bg-muted/30 transition-colors">
-              <input
-                type="checkbox"
-                checked={editValue === 'true'}
-                onChange={(e) => setEditValue(e.target.checked ? 'true' : 'false')}
-                className="w-5 h-5 rounded"
-              />
-              <span className="text-sm">{editValue === 'true' ? '启用' : '禁用'}</span>
-            </label>
-          ) : item.type === 'number' ? (
+        {field.type === 'boolean' ? (
+          <label className="flex items-center gap-3 cursor-pointer p-3 border border-border/50 rounded-lg hover:bg-muted/30 transition-colors">
             <input
-              type="number"
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
+              type="checkbox"
+              checked={displayValue === true}
+              onChange={(e) => onChange(e.target.checked)}
+              className="w-5 h-5 rounded"
+            />
+            <span className="text-sm">{displayValue === true ? '启用' : '禁用'}</span>
+          </label>
+        ) : field.type === 'select' ? (
+          <select
+            value={String(displayValue)}
+            onChange={(e) => onChange(e.target.value)}
+            className="input"
+          >
+            {field.options?.map(opt => (
+              <option key={opt} value={opt}>{formatKeyLabel(opt)}</option>
+            ))}
+          </select>
+        ) : (
+          <div className="relative">
+            <input
+              type={isSecret && !isVisible ? 'password' : field.type === 'number' ? 'number' : 'text'}
+              step={field.step}
+              value={displayValue === true ? 'true' : displayValue === false ? 'false' : String(displayValue)}
+              onChange={(e) => {
+                const newVal = field.type === 'number'
+                  ? Number(e.target.value)
+                  : e.target.value;
+                onChange(newVal);
+              }}
+              placeholder={field.placeholder}
               className="input w-full"
             />
+            {isSecret && (
+              <button
+                type="button"
+                onClick={() => setVisibleSecrets(prev => {
+                  const next = new Set(prev);
+                  const key = fullPath.join('.');
+                  if (next.has(key)) next.delete(key);
+                  else next.add(key);
+                  return next;
+                })}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {isVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Render module editor modal
+  const renderModuleEditor = () => {
+    if (!editingModule || !editConfig) return null;
+
+    const moduleDef = MODULE_DEFINITIONS[editingModule as keyof typeof MODULE_DEFINITIONS] as ModuleConfig;
+    const ModuleIcon = moduleDef.icon;
+
+    // Handle provider list
+    if (moduleDef.isProviderList) {
+      const providers = editConfig.providers as Record<string, Record<string, unknown>> || {};
+
+      return (
+        <div className="space-y-6">
+          <div className="flex items-center gap-3 pb-4 border-b border-border/50">
+            <div className="rounded-md border border-border bg-muted/50 p-2">
+              <ModuleIcon className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold">{moduleDef.label}</h3>
+              <p className="text-sm text-muted-foreground">{moduleDef.description}</p>
+            </div>
+          </div>
+
+          {editingSubKey ? (
+            // Edit single provider
+            <div className="space-y-4">
+              <button
+                onClick={() => setEditingSubKey(null)}
+                className="text-sm text-primary hover:underline flex items-center gap-1"
+              >
+                ← 返回提供商列表
+              </button>
+
+              <div className="p-4 bg-muted/20 rounded-lg">
+                <h4 className="font-semibold mb-4">{formatKeyLabel(editingSubKey)}</h4>
+
+                <div className="space-y-4">
+                  {renderField(
+                    { key: 'apiKey', label: 'API Key', type: 'password' },
+                    (providers[editingSubKey]?.apiKey ?? providers[editingSubKey]?.api_key) || '',
+                    (val) => {
+                      setValueByPath(editConfig, ['providers', editingSubKey, 'apiKey'], val);
+                      setEditConfig({ ...editConfig });
+                    },
+                    ['providers', editingSubKey, 'apiKey']
+                  )}
+
+                  {renderField(
+                    { key: 'apiBase', label: 'API Base URL', type: 'text', placeholder: '可选' },
+                    (providers[editingSubKey]?.apiBase ?? providers[editingSubKey]?.api_base) || '',
+                    (val) => {
+                      setValueByPath(editConfig, ['providers', editingSubKey, 'apiBase'], val);
+                      setEditConfig({ ...editConfig });
+                    },
+                    ['providers', editingSubKey, 'apiBase']
+                  )}
+                </div>
+              </div>
+            </div>
           ) : (
-            <div className="relative">
-              {item.isSecret && !isSecretVisible ? (
-                <input
-                  type="password"
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  className="input w-full font-mono"
-                  placeholder="••••••••"
-                />
-              ) : (
-                <textarea
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  className="input w-full min-h-[200px] font-mono text-sm resize-y"
-                  placeholder="输入值..."
-                />
-              )}
-              {item.isSecret && (
-                <button
-                  type="button"
-                  onClick={() => setVisibleSecrets(prev => {
-                    const next = new Set(prev);
-                    if (next.has(item.displayKey)) next.delete(item.displayKey);
-                    else next.add(item.displayKey);
-                    return next;
-                  })}
-                  className="absolute right-3 top-3 text-muted-foreground hover:text-foreground"
-                >
-                  {isSecretVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              )}
+            // Provider list
+            <div className="grid gap-3 sm:grid-cols-2">
+              {Object.entries(PROVIDER_CONFIGS).map(([key, info]) => {
+                const hasKey = !!(providers[key]?.apiKey ?? providers[key]?.api_key);
+                const isOAuth = info.isOAuth;
+
+                return (
+                  <div
+                    key={key}
+                    onClick={() => !isOAuth && setEditingSubKey(key)}
+                    className={`p-4 rounded-lg border transition-all hover:border-primary/50 ${
+                      hasKey ? 'bg-green-500/5 border-green-500/30' : 'bg-muted/30 border-border/50'
+                    } ${isOAuth ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="font-medium">{info.label}</h4>
+                        <p className="text-xs text-muted-foreground font-mono mt-1">{key}</p>
+                      </div>
+                      {isOAuth ? (
+                        <span className="text-xs px-2 py-1 rounded-full bg-blue-500/10 text-blue-600">OAuth</span>
+                      ) : hasKey ? (
+                        <span className="text-xs px-2 py-1 rounded-full bg-green-500/10 text-green-600">已配置</span>
+                      ) : (
+                        <Edit2 className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
+      );
+    }
 
-        {/* Current value preview for complex types */}
-        {(item.type === 'object' || item.type === 'array') && (
-          <div className="p-3 bg-muted/30 rounded-lg border border-border/50">
-            <div className="text-xs text-muted-foreground mb-2">当前值预览:</div>
-            <pre className="text-xs font-mono overflow-x-auto max-h-40">
-              {JSON.stringify(item.value, null, 2)}
-            </pre>
+    // Handle channel list
+    if (moduleDef.isChannelList) {
+      const channels = editConfig.channels as Record<string, Record<string, unknown>> || {};
+
+      return (
+        <div className="space-y-6">
+          <div className="flex items-center gap-3 pb-4 border-b border-border/50">
+            <div className="rounded-md border border-border bg-muted/50 p-2">
+              <ModuleIcon className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold">{moduleDef.label}</h3>
+              <p className="text-sm text-muted-foreground">{moduleDef.description}</p>
+            </div>
           </div>
-        )}
 
-        {/* Actions */}
-        <div className="flex gap-2 pt-4 border-t border-border/50">
-          <button onClick={handleSave} className="btn btn-primary flex-1">
-            <Save className="h-4 w-4" />
-            保存更改
-          </button>
-          <button onClick={onClose} className="btn btn-secondary flex-1">
-            取消
-          </button>
+          {editingSubKey ? (
+            // Edit single channel
+            <div className="space-y-4">
+              <button
+                onClick={() => setEditingSubKey(null)}
+                className="text-sm text-primary hover:underline flex items-center gap-1"
+              >
+                ← 返回频道列表
+              </button>
+
+              <div className="p-4 bg-muted/20 rounded-lg">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="font-semibold">{CHANNEL_CONFIGS[editingSubKey]?.label || formatKeyLabel(editingSubKey)}</h4>
+                  <span className={`status-badge ${channels[editingSubKey]?.enabled ? 'status-badge-online' : 'status-badge-offline'}`}>
+                    {channels[editingSubKey]?.enabled ? '已启用' : '已禁用'}
+                  </span>
+                </div>
+
+                <p className="text-sm text-muted-foreground mb-4">
+                  {CHANNEL_CONFIGS[editingSubKey]?.description}
+                </p>
+
+                <div className="space-y-4">
+                  {CHANNEL_CONFIGS[editingSubKey]?.fields.map(field => {
+                    const fieldPath = ['channels', editingSubKey, field.key];
+                    const currentValue = getValueByPath(editConfig, fieldPath);
+
+                    return (
+                      <div key={field.key}>
+                        {renderField(
+                          field as ConfigItem,
+                          currentValue,
+                          (val) => {
+                            setValueByPath(editConfig, fieldPath, val);
+                            setEditConfig({ ...editConfig });
+                          },
+                          fieldPath
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : (
+            // Channel list
+            <div className="grid gap-3 sm:grid-cols-2">
+              {Object.entries(CHANNEL_CONFIGS).map(([key, info]) => {
+                const channelConfig = channels[key] || {};
+                const isEnabled = channelConfig.enabled === true;
+
+                return (
+                  <div
+                    key={key}
+                    onClick={() => setEditingSubKey(key)}
+                    className={`p-4 rounded-lg border cursor-pointer transition-all hover:border-primary/50 ${
+                      isEnabled ? 'bg-green-500/5 border-green-500/30' : 'bg-muted/30 border-border/50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="font-medium">{info.label}</h4>
+                        <p className="text-xs text-muted-foreground mt-1">{info.description}</p>
+                      </div>
+                      {isEnabled ? (
+                        <span className="status-badge status-badge-online">已启用</span>
+                      ) : (
+                        <Edit2 className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Standard module with fields
+    const renderModuleFields = (mod: ModuleConfig, basePath: string[]) => {
+      return (
+        <>
+          {mod.fields?.map(field => {
+            const fieldPath = [...basePath, field.key];
+            const currentValue = getValueByPath(editConfig, fieldPath);
+
+            return (
+              <div key={field.key}>
+                {renderField(
+                  field,
+                  currentValue,
+                  (val) => {
+                    setValueByPath(editConfig, fieldPath, val);
+                    setEditConfig({ ...editConfig });
+                  },
+                  fieldPath
+                )}
+              </div>
+            );
+          })}
+        </>
+      );
+    };
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3 pb-4 border-b border-border/50">
+          <div className="rounded-md border border-border bg-muted/50 p-2">
+            <ModuleIcon className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold">{moduleDef.label}</h3>
+            <p className="text-sm text-muted-foreground">{moduleDef.description}</p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {moduleDef.nestedPath ? (
+            // Handle nested path (like agents.defaults)
+            <div className="p-4 bg-muted/20 rounded-lg space-y-4">
+              <h4 className="font-medium">默认配置</h4>
+              {renderModuleFields(moduleDef, [editingModule, moduleDef.nestedPath])}
+            </div>
+          ) : (
+            // Direct fields
+            renderModuleFields(moduleDef, [editingModule])
+          )}
+
+          {moduleDef.nested && Object.entries(moduleDef.nested).map(([subKey, subMod]) => (
+            <div key={subKey} className="p-4 bg-muted/20 rounded-lg space-y-4">
+              <h4 className="font-medium">{subMod.label}</h4>
+              {subMod.fields && renderModuleFields(subMod, [editingModule, subKey])}
+              {subMod.nested && Object.entries(subMod.nested).map(([subSubKey, subSubMod]) => (
+                <div key={subSubKey} className="mt-4 p-3 bg-background rounded-lg space-y-3">
+                  <h5 className="text-sm font-medium text-muted-foreground">{subSubMod.label}</h5>
+                  {subSubMod.fields && renderModuleFields(subSubMod, [editingModule, subKey, subSubKey])}
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -461,6 +753,22 @@ export default function Config() {
     );
   }
 
+  const modules = Object.entries(MODULE_DEFINITIONS).map(([key, def]) => {
+    const status = getModuleStatus(key);
+    return {
+      key,
+      ...def,
+      status,
+    };
+  });
+
+  const filteredModules = searchQuery
+    ? modules.filter(m =>
+        m.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        m.description.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : modules;
+
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -468,7 +776,7 @@ export default function Config() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">配置</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            管理 nanobot 设置 · 共 {activeSection === 'providers' ? providerGroups.length : configItems.length} 项配置
+            管理 nanobot 设置
           </p>
         </div>
         <div className="flex gap-2">
@@ -495,255 +803,93 @@ export default function Config() {
         </div>
       )}
 
-      {/* Section Tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2">
-        {sections.map((section) => {
-          const SectionIcon = SECTION_ICONS[section.id] || Settings;
-          const sectionData = editConfig?.[section.id as keyof ConfigData] as Record<string, unknown> || {};
-          const itemCount = Object.keys(sectionData).length;
-
-          return (
-            <button
-              key={section.id}
-              onClick={() => {
-                if (hasChanges && !confirm('切换配置区域将丢失未保存的更改，确定继续吗？')) {
-                  return;
-                }
-                setActiveSection(section.id);
-                setSearchQuery('');
-              }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-all whitespace-nowrap ${
-                activeSection === section.id
-                  ? 'bg-primary text-primary-foreground border-primary'
-                  : 'bg-card hover:bg-muted/50 border-border/50'
-              }`}
-            >
-              <SectionIcon className="h-4 w-4" />
-              <span className="text-sm font-medium">{section.label}</span>
-              <span className={`text-xs px-1.5 py-0.5 rounded ${
-                activeSection === section.id
-                  ? 'bg-primary-foreground/20'
-                  : 'bg-muted'
-              }`}>
-                {itemCount}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Search Bar */}
+      {/* Search */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
         <input
           type="text"
-          placeholder={`搜索${sections.find(s => s.id === activeSection)?.label}配置...`}
+          placeholder="搜索配置模块..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="input h-10 pl-9"
         />
       </div>
 
-      {/* Providers Section - Grouped by provider */}
-      {activeSection === 'providers' && (
-        <>
-          {providerGroups.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <Database className="h-12 w-12 text-muted-foreground/50 mb-4" />
-              <p className="text-muted-foreground">
-                {searchQuery ? '未找到匹配的提供商' : '暂无提供商配置'}
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {providerGroups.map((group, index) => {
-                const isExpanded = expandedProviders.has(group.name);
-                const enabledModels = group.models.filter(m => m.config.enabled === true).length;
+      {/* Module Cards Grid */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {filteredModules.map((module, index) => {
+          const ModuleIcon = module.icon;
+          const isEnabled = module.status.total > 0 && module.status.enabled > 0;
+          const showCount = module.status.showCount;
 
-                return (
-                  <div
-                    key={group.name}
-                    className="card-elevated rounded-xl overflow-hidden scale-in"
-                    style={{ animationDelay: `${index * 30}ms` }}
-                  >
-                    {/* Provider Header */}
-                    <button
-                      onClick={() => toggleProviderExpanded(group.name)}
-                      className="w-full flex items-center justify-between px-5 py-4 hover:bg-muted/30 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="rounded-md border border-border bg-muted/50 p-2">
-                          <Database className="h-5 w-5 text-muted-foreground" />
-                        </div>
-                        <div className="text-left">
-                          <h3 className="font-semibold capitalize">{formatKeyLabel(group.name)}</h3>
-                          <p className="text-xs text-muted-foreground">
-                            {group.models.length} 个模型 · {enabledModels} 个已启用
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground font-mono">{group.name}</span>
-                        {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                      </div>
-                    </button>
-
-                    {/* Provider Models */}
-                    {isExpanded && (
-                      <div className="border-t border-border/50 p-4">
-                        {group.models.length === 0 ? (
-                          <p className="text-center text-sm text-muted-foreground py-4">
-                            此提供商暂无模型配置
-                          </p>
-                        ) : (
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            {group.models.map((model) => {
-                              const isEnabled = model.config.enabled === true;
-                              return (
-                                <div
-                                  key={model.name}
-                                  onClick={() => setSelectedItem({
-                                    key: 'enabled',
-                                    path: [group.name, 'models', model.name, 'enabled'],
-                                    value: isEnabled,
-                                    type: 'boolean',
-                                    isSecret: false,
-                                    section: 'providers',
-                                    displayKey: `${group.name}.models.${model.name}.enabled`,
-                                    providerName: group.name,
-                                    modelName: model.name,
-                                  })}
-                                  className={`p-3 rounded-lg border cursor-pointer transition-all hover:border-primary/50 ${
-                                    isEnabled
-                                      ? 'bg-green-500/5 border-green-500/30'
-                                      : 'bg-muted/30 border-border/50'
-                                  }`}
-                                >
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2">
-                                        <h4 className="font-medium text-sm truncate">{model.name}</h4>
-                                        <span className={`status-badge ${isEnabled ? 'status-badge-online' : 'status-badge-offline'}`}>
-                                          {isEnabled ? '已启用' : '已禁用'}
-                                        </span>
-                                      </div>
-                                      <p className="text-xs text-muted-foreground mt-1 truncate">
-                                        {Object.entries(model.config)
-                                          .filter(([k]) => k !== 'enabled')
-                                          .map(([k, v]) => `${k}: ${getValuePreview(v, 20)}`)
-                                          .join(' · ') || '无其他配置'}
-                                      </p>
-                                    </div>
-                                    <Cpu className={`h-4 w-4 ${isEnabled ? 'text-green-500' : 'text-muted-foreground'}`} />
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
+          return (
+            <div
+              key={module.key}
+              onClick={() => {
+                setEditingModule(module.key);
+                setEditingSubKey(null);
+              }}
+              className={`scale-in card-elevated group p-5 cursor-pointer transition-all hover:border-primary/50 ${
+                isEnabled ? 'border-green-500/30 bg-green-500/5' : ''
+              }`}
+              style={{ animationDelay: `${index * 30}ms` }}
+            >
+              <div className="flex items-start gap-3">
+                <div className={`rounded-md border p-2.5 group-hover:border-primary/50 transition-all ${
+                  isEnabled
+                    ? 'bg-green-500/10 border-green-500/30'
+                    : 'bg-muted/50 border-border'
+                }`}>
+                  <ModuleIcon className={`h-5 w-5 ${
+                    isEnabled ? 'text-green-500' : 'text-muted-foreground'
+                  } group-hover:text-primary transition-colors`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold">{module.label}</h3>
+                    {showCount && module.status.total > 0 && (
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        isEnabled ? 'bg-green-500/20 text-green-600' : 'bg-muted text-muted-foreground'
+                      }`}>
+                        {module.status.enabled}/{module.status.total}
+                      </span>
                     )}
                   </div>
-                );
-              })}
+                  <p className="text-sm text-muted-foreground mt-1">{module.description}</p>
+                </div>
+                <Edit2 className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+              </div>
             </div>
-          )}
-        </>
-      )}
+          );
+        })}
+      </div>
 
-      {/* Non-providers sections - Flattened cards */}
-      {activeSection !== 'providers' && (
-        <>
-          {configItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <Settings className="h-12 w-12 text-muted-foreground/50 mb-4" />
-              <p className="text-muted-foreground">
-                {searchQuery ? '未找到匹配的配置项' : '此配置区域为空'}
-              </p>
-            </div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {configItems.map((item, index) => {
-                const Icon = getConfigIcon(item.section, item.key);
-                const isBoolean = item.type === 'boolean';
-
-                return (
-                  <div
-                    key={item.displayKey}
-                    onClick={() => setSelectedItem(item)}
-                    className={`scale-in card-elevated group p-4 cursor-pointer ${
-                      item.isSecret ? 'border-orange-500/30' : ''
-                    } ${isBoolean && item.value ? 'border-green-500/30 bg-green-500/5' : ''}`}
-                    style={{ animationDelay: `${index * 25}ms` }}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className={`rounded-md border p-2 group-hover:border-primary/50 transition-all ${
-                        item.isSecret
-                          ? 'bg-orange-500/5 border-orange-500/30 group-hover:bg-orange-500/10'
-                          : isBoolean && item.value
-                          ? 'bg-green-500/10 border-green-500/30'
-                          : 'bg-muted/50 border-border group-hover:bg-primary/10'
-                      }`}>
-                        <Icon className={`h-4 w-4 ${
-                          item.isSecret
-                            ? 'text-orange-500'
-                            : isBoolean && item.value
-                            ? 'text-green-500'
-                            : 'text-muted-foreground'
-                        } group-hover:text-primary transition-colors`} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-medium text-sm truncate">{formatKeyLabel(item.key)}</h3>
-                          {item.isSecret && <Lock className="h-3 w-3 text-orange-500 flex-shrink-0" />}
-                          {isBoolean && (
-                            <span className={`status-badge ${item.value ? 'status-badge-online' : 'status-badge-offline'}`}>
-                              {item.value ? '已启用' : '已禁用'}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{item.displayKey}</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 flex items-center gap-1.5 text-xs flex-wrap">
-                      {!isBoolean && (
-                        <span className={`px-2 py-0.5 rounded-full ${
-                          item.type === 'array'
-                            ? 'bg-purple-500/10 text-purple-600'
-                            : item.type === 'object'
-                            ? 'bg-orange-500/10 text-orange-600'
-                            : 'bg-blue-500/10 text-blue-600'
-                        }`}>
-                          {item.type}
-                        </span>
-                      )}
-                      <span className="text-muted-foreground flex-1 truncate">
-                        {item.isSecret ? '••••••••' : getValuePreview(item.value, 30)}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Detail Modal */}
-      {selectedItem && (
+      {/* Editor Modal */}
+      {editingModule && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm fade-in"
-          onClick={() => setSelectedItem(null)}
+          onClick={() => {
+            if (hasChanges && !confirm('有未保存的更改，确定关闭吗？')) {
+              return;
+            }
+            setEditingModule(null);
+            setEditingSubKey(null);
+          }}
         >
           <div
-            className="bg-card rounded-xl border border-border shadow-xl w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col scale-in"
+            className="bg-card rounded-xl border border-border shadow-xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col scale-in"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between px-5 py-4 border-b border-border/50">
               <div className="text-sm text-muted-foreground">编辑配置</div>
               <button
-                onClick={() => setSelectedItem(null)}
+                onClick={() => {
+                  if (hasChanges && !confirm('有未保存的更改，确定关闭吗？')) {
+                    return;
+                  }
+                  setEditingModule(null);
+                  setEditingSubKey(null);
+                }}
                 className="icon-btn"
               >
                 <X className="h-4 w-4" />
@@ -751,21 +897,18 @@ export default function Config() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-5">
-              <ValueEditor item={selectedItem} onClose={() => setSelectedItem(null)} />
+              {renderModuleEditor()}
             </div>
 
-            <div className="px-5 py-3 border-t border-border/50 bg-muted/20">
+            <div className="px-5 py-3 border-t border-border/50 bg-muted/20 flex justify-end">
               <button
                 onClick={() => {
-                  if (confirm(`确定删除配置项 "${selectedItem.displayKey}"?`)) {
-                    deleteConfigItem(selectedItem.path);
-                    setSelectedItem(null);
-                  }
+                  setEditingModule(null);
+                  setEditingSubKey(null);
                 }}
-                className="btn btn-outline text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 w-full"
+                className="btn btn-secondary"
               >
-                <Trash2 className="h-4 w-4" />
-                删除此配置项
+                关闭
               </button>
             </div>
           </div>

@@ -5,7 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Menu, X, Sun, Moon, MessageSquare, Calendar, Brain, Settings, Activity, Zap, Server, Users } from 'lucide-react';
+import { Menu, X, Sun, Moon, MessageSquare, Calendar, Brain, Settings, Zap, Server, Users } from 'lucide-react';
 
 // Pages
 import Sessions from '@/components/Sessions/SessionsPage';
@@ -15,8 +15,6 @@ import Cron from '@/components/Cron/CronPage';
 import Memory from '@/components/Memory/MemoryPage';
 import Tools from '@/components/Tools/ToolsPage';
 import Config from '@/components/Config/ConfigPage';
-import Events from '@/components/Events/EventsPage';
-import Channels from '@/components/Channels/ChannelsPage';
 import MCP from '@/components/MCP/MCPPage';
 import Skills from '@/components/Skills/SkillsPage';
 import Subagents from '@/components/Subagents/SubagentsPage';
@@ -49,8 +47,6 @@ function AppContent() {
     { name: '记忆', href: '/memory', icon: Brain },
     { name: '工具', href: '/tools', icon: Settings },
     { name: '配置', href: '/config', icon: Settings },
-    { name: '事件', href: '/events', icon: Activity },
-    { name: '渠道', href: '/channels', icon: Server },
     { name: 'MCP', href: '/mcp', icon: Server },
     { name: '技能', href: '/skills', icon: Zap },
     { name: '子代理', href: '/subagents', icon: Users },
@@ -163,8 +159,6 @@ function AppContent() {
             <Route path="/memory" element={<Memory />} />
             <Route path="/tools" element={<Tools />} />
             <Route path="/config" element={<Config />} />
-            <Route path="/events" element={<Events />} />
-            <Route path="/channels" element={<Channels />} />
             <Route path="/mcp" element={<MCP />} />
             <Route path="/skills" element={<Skills />} />
             <Route path="/subagents" element={<Subagents />} />
