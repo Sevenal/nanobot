@@ -1,7 +1,7 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Dict
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -354,6 +354,45 @@ class MCPServerConfig(Base):
     tool_timeout: int = 30  # seconds before a tool call is cancelled
 
 
+class DockerSandboxConfig(Base):
+    """Docker sandbox configuration for skill evolution."""
+
+    enabled: bool = False
+    base_image: str = "python:3.11-slim"  # Base Docker image
+    workspace_path: str = "/workspace"  # Working directory inside sandbox
+    host_workspace: str = "/tmp/nanobot-sandbox"  # Host directory to mount
+    timeout: int = 300  # Default command timeout (seconds)
+    max_concurrent: int = 3  # Maximum concurrent containers
+    auto_cleanup: bool = True  # Auto-destroy containers after use
+    # Environment variables passed to all containers
+    env_vars: dict[str, str] = Field(default_factory=dict)
+    # Docker-specific settings
+    docker_host: str | None = None  # Docker daemon address (default: local socket)
+    network: str = "bridge"  # Docker network mode
+    memory_limit: str | None = None  # Memory limit (e.g. "2g")
+    cpu_limit: str | None = None  # CPU limit (e.g. "1.5")
+    # Prebuilt images for different skill types
+    prebuilt_images: dict[str, str] = Field(default_factory=dict)
+    # Common packages to pre-install in all containers
+    common_packages: list[str] = Field(
+        default_factory=lambda: ["requests", "httpx", "pyyaml", "python-dotenv"]
+    )
+    # Common system tools to pre-install
+    common_tools: list[str] = Field(default_factory=lambda: ["git", "curl", "wget"])
+
+
+class SandboxConfig(Base):
+    """Sandbox configuration for skill evolution using Open-SWE + Docker."""
+
+    enabled: bool = False
+    docker: DockerSandboxConfig = Field(default_factory=DockerSandboxConfig)
+    git_integration: bool = True  # Use git for version management
+    verification_required: bool = True  # Verify changes before applying
+    auto_evolution: bool = True  # Automatically trigger skill evolution
+    max_evolution_concurrent: int = 2  # Maximum concurrent evolutions
+    evolution_timeout: int = 600  # Evolution timeout (seconds)
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
@@ -361,6 +400,7 @@ class ToolsConfig(Base):
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)  # Sandbox for skill evolution
 
 
 class Config(BaseSettings):

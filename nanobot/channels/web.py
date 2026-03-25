@@ -155,10 +155,29 @@ class WebChannel(BaseChannel):
                 """Send progress updates via SSE."""
                 # Determine event type
                 event_type = "tool_call" if tool_hint else "progress"
-                message = json.dumps({
-                    "type": event_type,
-                    "content": text,
-                }, ensure_ascii=False)
+
+                # For tool calls, try to parse structured data from the text
+                # Format: "tool_name("arg1", "arg2")" or "tool_name1("..."), tool_name2("...")"
+                event_data: dict[str, Any] = {"type": event_type, "content": text}
+
+                if tool_hint:
+                    # Parse tool calls from text like: web_search("query"), Bash("command")
+                    import re
+                    # Pattern to match: tool_name("arguments")
+                    tool_pattern = r'(\w+)\s*\(\s*["\']([^"\']*)["\']'
+                    matches = re.findall(tool_pattern, text)
+                    if matches:
+                        # Extract first tool call for structured data
+                        tool_name, first_arg = matches[0]
+                        event_data["tool_name"] = tool_name
+                        event_data["tool_id"] = f"{tool_name}_{int(datetime.now().timestamp() * 1000)}"
+                        # Try to create a structured arguments object
+                        try:
+                            event_data["arguments"] = {"query": first_arg} if first_arg else {}
+                        except Exception:
+                            pass
+
+                message = json.dumps(event_data, ensure_ascii=False)
 
                 # Broadcast to all connected SSE clients for event log
                 for client_id, queue in list(self._sse_queues.items()):

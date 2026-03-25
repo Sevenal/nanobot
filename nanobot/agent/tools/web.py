@@ -1,4 +1,4 @@
-"""Web tools: web_search and web_fetch."""
+"""Web tools: web_search, web_fetch, and http_request."""
 
 import html
 import json
@@ -179,3 +179,84 @@ class WebFetchTool(Tool):
         text = re.sub(r'</(p|div|section|article)>', '\n\n', text, flags=re.I)
         text = re.sub(r'<(br|hr)\s*/?>', '\n', text, flags=re.I)
         return _normalize(_strip_tags(text))
+
+
+class HttpRequestTool(Tool):
+    """Make HTTP requests with any method and custom headers/body."""
+
+    name = "http_request"
+    description = "Make an HTTP request (GET, POST, PUT, DELETE, etc.) to any URL. Useful for calling APIs, webhooks, or any HTTP endpoint."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "The URL to request"},
+            "method": {"type": "string", "description": "HTTP method (GET, POST, PUT, DELETE, PATCH, etc.)", "default": "GET"},
+            "headers": {"type": "object", "description": "Optional headers as key-value pairs"},
+            "body": {"type": "object", "description": "Request body for POST/PUT (will be JSON-encoded)"},
+            "timeout": {"type": "integer", "description": "Request timeout in seconds", "default": 30}
+        },
+        "required": ["url"]
+    }
+
+    def __init__(self, proxy: str | None = None, max_redirects: int = 5):
+        self.proxy = proxy
+        self.max_redirects = max_redirects
+
+    async def execute(self, url: str, method: str = "GET", headers: dict | None = None,
+                     body: dict | None = None, timeout: int = 30, **kwargs: Any) -> str:
+        is_valid, error_msg = _validate_url(url)
+        if not is_valid:
+            return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
+
+        method = method.upper()
+        default_headers = {"User-Agent": USER_AGENT}
+        if headers:
+            default_headers.update(headers)
+        if body and "Content-Type" not in default_headers:
+            default_headers["Content-Type"] = "application/json"
+
+        try:
+            logger.debug("HttpRequest: {} {} (proxy: {})", method, url, self.proxy or "direct")
+            async with httpx.AsyncClient(
+                proxy=self.proxy,
+                follow_redirects=True,
+                max_redirects=self.max_redirects,
+                timeout=timeout,
+            ) as client:
+                request_kwargs = {"headers": default_headers}
+                if body:
+                    request_kwargs["json"] = body
+
+                r = await client.request(method, url, **request_kwargs)
+                r.raise_for_status()
+
+                response_data = {
+                    "status": r.status_code,
+                    "headers": dict(r.headers),
+                    "url": str(r.url),
+                }
+
+                ctype = r.headers.get("content-type", "")
+                if "application/json" in ctype:
+                    response_data["body"] = r.json()
+                else:
+                    response_data["body"] = r.text[:100000]  # Limit response size
+                    if len(r.text) > 100000:
+                        response_data["truncated"] = True
+
+                return json.dumps(response_data, ensure_ascii=False, indent=2)
+
+        except httpx.HTTPStatusError as e:
+            logger.error("HttpRequest HTTP error: {}", e)
+            return json.dumps({
+                "error": f"HTTP {e.response.status_code}",
+                "status": e.response.status_code,
+                "url": url,
+                "body": e.response.text[:1000] if hasattr(e.response, 'text') else None
+            }, ensure_ascii=False)
+        except httpx.ProxyError as e:
+            logger.error("HttpRequest proxy error: {}", e)
+            return json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False)
+        except Exception as e:
+            logger.error("HttpRequest error: {}", e)
+            return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)

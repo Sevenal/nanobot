@@ -31,8 +31,14 @@ export interface Message {
 export interface ToolCall {
   id: string;
   type: string;
-  name: string;
-  arguments: Record<string, unknown>;
+  // OpenAI format: function object with name and arguments (as JSON string)
+  function?: {
+    name: string;
+    arguments: string; // JSON string of arguments
+  };
+  // Legacy/simple format (fallback)
+  name?: string;
+  arguments?: Record<string, unknown> | string;
 }
 
 export interface CronJob {

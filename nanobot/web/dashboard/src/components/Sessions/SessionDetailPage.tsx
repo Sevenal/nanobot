@@ -58,8 +58,23 @@ export default function SessionDetail() {
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         markdown += `### 工具调用\n\n`;
         msg.tool_calls.forEach((call) => {
-          markdown += `- **${call.name}** (${call.type})\n`;
-          markdown += `  \`\`\`json\n${JSON.stringify(call.arguments, null, 2)}\n  \`\`\`\n\n`;
+          // Handle OpenAI format: call.function.name, call.function.arguments
+          // and legacy format: call.name, call.arguments
+          const func = (call as any).function;
+          const toolName = func?.name || call.name || 'unknown';
+          let args = func?.arguments || call.arguments;
+
+          // Parse arguments if string
+          if (typeof args === 'string') {
+            try {
+              args = JSON.parse(args);
+            } catch {
+              args = { _raw: args };
+            }
+          }
+
+          markdown += `- **${toolName}** (${call.type})\n`;
+          markdown += `  \`\`\`json\n${JSON.stringify(args, null, 2)}\n  \`\`\`\n\n`;
         });
       }
 
@@ -291,15 +306,32 @@ export default function SessionDetail() {
                       工具调用 ({msg.tool_calls.length})
                     </summary>
                     <div className="mt-2 space-y-2">
-                      {msg.tool_calls.map((call, callIdx) => (
-                        <div key={callIdx} className="bg-muted p-3 rounded text-sm">
-                          <div className="font-medium">{call.name}</div>
-                          <div className="text-xs text-muted-foreground">{call.type}</div>
-                          <pre className="mt-2 text-xs overflow-x-auto">
-                            {JSON.stringify(call.arguments, null, 2)}
-                          </pre>
-                        </div>
-                      ))}
+                      {msg.tool_calls.map((call, callIdx) => {
+                        // Handle OpenAI format: call.function.name, call.function.arguments
+                        // and legacy format: call.name, call.arguments
+                        const func = (call as any).function;
+                        const toolName = func?.name || call.name || 'unknown';
+                        let args = func?.arguments || call.arguments;
+
+                        // Parse arguments if string
+                        if (typeof args === 'string') {
+                          try {
+                            args = JSON.parse(args);
+                          } catch {
+                            args = { _raw: args };
+                          }
+                        }
+
+                        return (
+                          <div key={callIdx} className="bg-muted p-3 rounded text-sm">
+                            <div className="font-medium">{toolName}</div>
+                            <div className="text-xs text-muted-foreground">{call.type}</div>
+                            <pre className="mt-2 text-xs overflow-x-auto">
+                              {JSON.stringify(args, null, 2)}
+                            </pre>
+                          </div>
+                        );
+                      })}
                     </div>
                   </details>
                 )}

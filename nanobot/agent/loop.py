@@ -7,7 +7,7 @@ import json
 import re
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict
 
 from loguru import logger
 
@@ -20,14 +20,14 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+from nanobot.agent.tools.web import WebFetchTool, WebSearchTool, HttpRequestTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig
+    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, SandboxConfig
     from nanobot.cron.service import CronService
 
 
@@ -64,6 +64,7 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        sandbox_config: SandboxConfig | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -118,6 +119,16 @@ class AgentLoop:
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
         )
+
+        # 初始化沙箱和进化系统
+        self.sandbox_config = sandbox_config
+        self.sandbox_manager = None
+        self.evolution_workflow = None
+        self.skill_failures: dict[str, int] = {}
+
+        if sandbox_config and sandbox_config.enabled:
+            self._initialize_sandbox_system()
+
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -133,10 +144,45 @@ class AgentLoop:
         ))
         self.tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
+        self.tools.register(HttpRequestTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # 注册沙箱工具（如果启用）
+        if self.sandbox_manager:
+            from nanobot.agent.tools.sandbox import SandboxTool
+            self.tools.register(SandboxTool(manager=self.sandbox_manager))
+            logger.info("沙箱工具已注册")
+
+    def _initialize_sandbox_system(self) -> None:
+        """初始化沙箱和进化系统"""
+        try:
+            from nanobot.agent.sandbox.manager import SandboxManager
+            from nanobot.agent.evolution.workflow import SkillEvolutionWorkflow
+            from nanobot.agent.evolution.git_manager import GitVersionManager
+
+            # 初始化沙箱管理器
+            self.sandbox_manager = SandboxManager(self.sandbox_config, self.workspace)
+            logger.info("沙箱管理器已初始化")
+
+            # 初始化 Git 版本管理器
+            self.git_manager = GitVersionManager(self.workspace)
+            logger.info("Git 版本管理器已初始化")
+
+            # 初始化进化工作流
+            self.evolution_workflow = SkillEvolutionWorkflow(
+                sandbox_manager=self.sandbox_manager,
+                workspace=self.workspace,
+                llm_provider=self.provider
+            )
+            logger.info("进化工作流已初始化")
+
+        except Exception as e:
+            logger.error("初始化沙箱系统失败: {}", e)
+            self.sandbox_manager = None
+            self.evolution_workflow = None
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -281,11 +327,29 @@ class AgentLoop:
 
         return final_content, tools_used, messages
 
+    async def _periodic_sandbox_cleanup(self) -> None:
+        """定期清理空闲沙箱"""
+        while self._running:
+            try:
+                await asyncio.sleep(300)  # 每 5 分钟清理一次
+                if self.sandbox_manager:
+                    cleaned = await self.sandbox_manager.cleanup_idle_sandboxes(
+                        max_idle_minutes=30
+                    )
+                    if cleaned > 0:
+                        logger.info(f"清理了 {cleaned} 个空闲沙箱")
+            except Exception as e:
+                logger.error(f"沙箱清理出错: {e}")
+
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
         logger.info("Agent loop started")
+
+        # 启动沙箱清理任务（如果启用）
+        if self.sandbox_manager:
+            asyncio.create_task(self._periodic_sandbox_cleanup())
 
         while self._running:
             try:
@@ -331,12 +395,99 @@ class AgentLoop:
             except asyncio.CancelledError:
                 logger.info("Task cancelled for session {}", msg.session_key)
                 raise
-            except Exception:
+            except Exception as e:
+                error_msg = str(e)
                 logger.exception("Error processing message for session {}", msg.session_key)
+
+                # 检查是否应该触发 skill 进化
+                if self.evolution_workflow:
+                    await self._check_and_trigger_evolution(msg, error_msg)
+
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
                     content="Sorry, I encountered an error.",
                 ))
+
+    async def _check_and_trigger_evolution(
+        self,
+        msg: InboundMessage,
+        error_msg: str
+    ) -> None:
+        """检查错误并触发 skill 进化"""
+        try:
+            from nanobot.agent.evolution.decider import EvolutionTrigger
+
+            # 尝试从错误消息中提取涉及的 skill
+            skill_name = self._extract_involved_skill(error_msg, msg)
+            if not skill_name:
+                return
+
+            # 更新失败计数
+            self.skill_failures[skill_name] = self.skill_failures.get(skill_name, 0) + 1
+            failure_count = self.skill_failures[skill_name]
+
+            # 检查是否应该触发进化
+            if EvolutionTrigger.should_evolve(
+                skill_name,
+                error_message=error_msg,
+                failure_count=failure_count
+            ):
+                reason = EvolutionTrigger.get_evolution_reason(
+                    skill_name,
+                    error_message=error_msg,
+                    failure_count=failure_count
+                )
+
+                logger.info(f"🧬 触发 skill 进化: {skill_name} - {reason}")
+
+                # 在后台触发进化（非阻塞）
+                asyncio.create_task(self._run_evolution_in_background(
+                    skill_name, reason, error_msg
+                ))
+
+        except Exception as e:
+            logger.error("检查进化触发时出错: {}", e)
+
+    def _extract_involved_skill(
+        self,
+        error_msg: str,
+        msg: InboundMessage
+    ) -> str | None:
+        """从错误消息中提取涉及的 skill"""
+        import re
+
+        # 尝试从错误消息中提取 skill 名称
+        skill_match = re.search(r'skill[\'"]?(\w+)[\'"]?', error_msg, re.IGNORECASE)
+        if skill_match:
+            return skill_match.group(1)
+
+        # 尝试从消息内容中提取
+        if msg.content:
+            skill_match = re.search(r'/skill[\'"]?(\w+)', msg.content, re.IGNORECASE)
+            if skill_match:
+                return skill_match.group(1)
+
+        return None
+
+    async def _run_evolution_in_background(
+        self,
+        skill_name: str,
+        reason: str,
+        error_context: str
+    ) -> None:
+        """在后台运行进化任务"""
+        try:
+            result = await self.evolution_workflow.evolve_skill(
+                skill_name=skill_name,
+                reason=reason,
+                error_context=error_context
+            )
+            logger.info(f"✅ Skill '{skill_name}' 进化完成: {result}")
+        except Exception as e:
+            logger.error(f"❌ Skill '{skill_name}' 进化失败: {e}")
+            # 重置失败计数，允许重新尝试
+            if skill_name in self.skill_failures:
+                self.skill_failures[skill_name] = max(0, self.skill_failures[skill_name] - 1)
 
     async def close_mcp(self) -> None:
         """Close MCP connections."""
@@ -351,6 +502,18 @@ class AgentLoop:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
+
+    async def cleanup(self) -> None:
+        """Cleanup resources before shutdown."""
+        # 清理所有活动沙箱
+        if self.sandbox_manager:
+            try:
+                active_sandboxes = self.sandbox_manager.get_active_sandboxes()
+                logger.info(f"清理 {len(active_sandboxes)} 个活动沙箱")
+                for sandbox_id in list(active_sandboxes.keys()):
+                    await self.sandbox_manager.destroy_sandbox(sandbox_id)
+            except Exception as e:
+                logger.error(f"清理沙箱时出错: {e}")
 
     async def _process_message(
         self,

@@ -1,0 +1,56 @@
+# 拼多多电商技能配置
+skill:
+  name: pdd-ecommerce
+  version: "1.0.0"
+
+# 拼多多开放平台配置
+pdd:
+  client_id: ""  # 从 https://open.pinduoduo.com 获取
+  client_secret: ""
+  access_token: ""
+  api_base_url: "https://open-api.pinduoduo.com"
+
+# 权限控制
+security:
+  allowed_users: []  # 添加允许的用户ID（如：["user123", "user456"]）
+  require_verification: true
+
+# 文件配置
+storage:
+  data_dir: "~/.nanobot/skills/pdd-ecommerce/data"
+  upload_batch_size: 10
+  max_file_size_mb: 50
+
+# AI 配置
+ai:
+  enabled: true
+  optimization_level: "advanced"
+  model: "claude-opus-4-5"
+  provider: "anthropic"
+  features:
+    auto_description: true       # AI 生成描述
+    auto_image_process: true     # 自动处理图片
+    auto_pricing: true           # 智能定价
+    auto_category: true          # 自动匹配类目
+    auto_sku: true              # 自动识别 SKU
+
+# 定价策略
+pricing:
+  strategy: "profit_margin"      # profit_margin, competitor
+  profit_margin: 0.3            # 利润率 30%
+
+# 图片处理
+image:
+  enable_white_bg: true         # 生成白底图
+  target_size: 800              # 目标尺寸 800x800
+  quality: 95                   # JPEG 质量
+
+# API 限流
+rate_limit:
+  requests_per_minute: 100
+  burst_size: 10
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "~/.nanobot/skills/pdd-ecommerce/logs/pdd.log"

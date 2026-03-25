@@ -371,27 +371,37 @@ export default function Chat() {
               if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
                 const toolCallsForMsg = msg.tool_calls.map((tc): ToolCallDisplay => {
                   // Parse the function structure: tc.function.name, tc.function.arguments (as JSON string)
+                  // OpenAI format: tc.function.name, tc.function.arguments (JSON string)
+                  // Legacy format: tc.name, tc.arguments (object or string)
                   const func = (tc as any).function;
-                  const toolName = func?.name || tc.name;
-                  let args = tc.arguments;
+                  let toolName: string;
+                  let args: Record<string, unknown> | string;
 
-                  // If arguments is a string, try to parse it
-                  if (typeof args === 'string') {
-                    try {
-                      args = JSON.parse(args);
-                    } catch {
-                      args = { raw: args };
-                    }
-                  } else if (func?.arguments) {
-                    // Arguments might be in the function object as a string
-                    if (typeof func.arguments === 'string') {
+                  if (func?.name) {
+                    // OpenAI format
+                    toolName = func.name;
+                    const argsStr = func.arguments;
+                    if (typeof argsStr === 'string') {
                       try {
-                        args = JSON.parse(func.arguments);
+                        args = JSON.parse(argsStr);
                       } catch {
-                        args = { raw: func.arguments };
+                        args = { _raw: argsStr };
                       }
                     } else {
-                      args = func.arguments;
+                      args = argsStr || {};
+                    }
+                  } else {
+                    // Legacy format
+                    toolName = tc.name || 'unknown';
+                    const tcArgs = tc.arguments;
+                    if (typeof tcArgs === 'string') {
+                      try {
+                        args = JSON.parse(tcArgs);
+                      } catch {
+                        args = { _raw: tcArgs };
+                      }
+                    } else {
+                      args = tcArgs || {};
                     }
                   }
 
@@ -522,10 +532,31 @@ export default function Chat() {
         }
       } else if (msg.type === 'tool_call') {
         // New tool call started
+        // Parse tool call info from content: "tool_name("arg1", "arg2")"
+        let toolName = msg.tool_name || 'unknown';
+        let toolArgs: Record<string, unknown> = {};
+
+        if (msg.content && !msg.tool_name) {
+          // Parse from content string like: web_search("query") or Bash("command")
+          const match = msg.content.match(/^(\w+)\s*\(([^)]*)\)/);
+          if (match) {
+            toolName = match[1];
+            // Try to extract first argument (common pattern)
+            const argsStr = match[2].trim();
+            if (argsStr.startsWith('"') || argsStr.startsWith("'")) {
+              // Extract string argument
+              const argMatch = argsStr.match(/^(["'])(.*?)\1/);
+              if (argMatch) {
+                toolArgs = { query: argMatch[2] };
+              }
+            }
+          }
+        }
+
         const newToolCall: ToolCallDisplay = {
-          id: msg.tool_id || `tool-${Date.now()}`,
-          name: msg.tool_name || 'unknown',
-          arguments: msg.arguments || {},
+          id: msg.tool_id || `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+          name: toolName,
+          arguments: msg.arguments || toolArgs,
           status: 'running',
           timestamp: new Date().toISOString()
         };
@@ -533,12 +564,32 @@ export default function Chat() {
         setCurrentStep(`调用工具: ${newToolCall.name}`);
       } else if (msg.type === 'tool_result') {
         // Tool call completed
+        // Parse result from content: "tool_name: result_preview"
+        let resultContent = msg.result;
+        let toolIdToUpdate = msg.tool_id;
+
+        if (!resultContent && msg.content) {
+          resultContent = msg.content;
+          // Try to extract tool_id from content or find most recent running tool
+          if (!toolIdToUpdate) {
+            const runningTools = toolCallsRef.current.filter(t => t.status === 'running');
+            if (runningTools.length > 0) {
+              // Find by name in content
+              const contentLower = msg.content.toLowerCase();
+              const matchedTool = runningTools.find(t =>
+                contentLower.includes(t.name.toLowerCase())
+              );
+              toolIdToUpdate = matchedTool?.id || runningTools[0].id;
+            }
+          }
+        }
+
         setToolCalls((prev) => prev.map(t =>
-          t.id === msg.tool_id
+          (toolIdToUpdate && t.id === toolIdToUpdate) || (!toolIdToUpdate && t.status === 'running')
             ? {
                 ...t,
                 status: msg.error ? 'error' : 'completed',
-                result: msg.result || (msg.error ? String(msg.error) : undefined),
+                result: resultContent || (msg.error ? String(msg.error) : undefined),
                 duration: msg.duration
               }
             : t

@@ -1,25 +1,22 @@
 /**
- * Config page - Card-style configuration editor
- * Linear/Vercel Style - Similar to Tools page
- * Shows flattened nested config items, providers grouped by provider name
+ * Config page - Clean, simple configuration editor with add functionality
+ * Linear/Vercel Style
  */
 
 import { useEffect, useState, createElement } from 'react';
-import { Save, RefreshCw, Settings, Eye, EyeOff, Search, AlertTriangle, Trash2, X, FileText, Lock, Database, MessageCircle, Cpu, Globe, ChevronDown, ChevronRight } from 'lucide-react';
+import { Save, RefreshCw, Settings, Eye, EyeOff, Search, AlertTriangle, X, FileText, Lock, Database, MessageCircle, Cpu, Globe, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/api/client';
 import type { ConfigData } from '@/api/types';
 
-// Secret key patterns to detect sensitive data
+// Secret key patterns
 const SECRET_PATTERNS = [
   /password/i, /secret/i, /token/i, /key/i, /api/i, /credential/i
 ];
 
-// Check if a key might contain sensitive data
 const isSecretKey = (key: string): boolean => {
   return SECRET_PATTERNS.some(pattern => pattern.test(key));
 };
 
-// Get display label for config keys
 const formatKeyLabel = (key: string): string => {
   return key
     .replace(/_/g, ' ')
@@ -28,7 +25,6 @@ const formatKeyLabel = (key: string): string => {
     .replace(/^\w/, c => c.toUpperCase());
 };
 
-// Get icon for config section/key
 const getConfigIcon = (_section: string, key: string) => {
   const keyLower = key.toLowerCase();
   if (keyLower.includes('url') || keyLower.includes('endpoint') || keyLower.includes('host')) return Globe;
@@ -38,17 +34,14 @@ const getConfigIcon = (_section: string, key: string) => {
   return FileText;
 };
 
-// Value type detection
 const getValueType = (value: unknown): 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' => {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
   return typeof value as 'string' | 'number' | 'boolean' | 'object';
 };
 
-// Get value preview
-const getValuePreview = (value: unknown, maxLength = 60): string => {
+const getValuePreview = (value: unknown, maxLength = 50): string => {
   const type = getValueType(value);
-
   if (type === 'null') return 'null';
   if (type === 'boolean') return value ? '启用' : '禁用';
   if (type === 'array') return `[${(value as unknown[]).length} 项]`;
@@ -60,15 +53,6 @@ const getValuePreview = (value: unknown, maxLength = 60): string => {
   return String(value);
 };
 
-// Section icons
-const SECTION_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  agents: Cpu,
-  channels: MessageCircle,
-  providers: Database,
-  tools: Settings,
-  gateway: Globe,
-};
-
 interface ConfigItem {
   key: string;
   path: string[];
@@ -77,8 +61,7 @@ interface ConfigItem {
   isSecret: boolean;
   section: string;
   displayKey: string;
-  providerName?: string; // For providers section
-  modelName?: string; // For provider models
+  parentKey?: string;
 }
 
 interface ProviderGroup {
@@ -86,6 +69,8 @@ interface ProviderGroup {
   config: Record<string, unknown>;
   models: Array<{ name: string; config: Record<string, unknown> }>;
 }
+
+type ValueType = 'string' | 'number' | 'boolean' | 'object' | 'array';
 
 export default function Config() {
   const [config, setConfig] = useState<ConfigData | null>(null);
@@ -98,6 +83,8 @@ export default function Config() {
   const [selectedItem, setSelectedItem] = useState<ConfigItem | null>(null);
   const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set());
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addModelProvider, setAddModelProvider] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchConfig = async () => {
@@ -111,7 +98,6 @@ export default function Config() {
         setLoading(false);
       }
     };
-
     fetchConfig();
   }, []);
 
@@ -123,7 +109,6 @@ export default function Config() {
 
   const handleSave = async () => {
     if (!editConfig) return;
-
     setSaving(true);
     try {
       await api.updateConfig(editConfig);
@@ -152,7 +137,6 @@ export default function Config() {
     }
   };
 
-  // Update nested config value
   const updateConfigValue = (path: string[], value: unknown) => {
     if (!editConfig) return;
     const section = activeSection;
@@ -166,12 +150,10 @@ export default function Config() {
       }
       current = current[part] as Record<string, unknown>;
     }
-
     current[path[path.length - 1]] = value;
     setEditConfig({ ...editConfig, [section]: sectionData });
   };
 
-  // Delete config item
   const deleteConfigItem = (path: string[]) => {
     if (!editConfig) return;
     const section = activeSection;
@@ -190,19 +172,68 @@ export default function Config() {
         delete current[path[path.length - 1]];
       }
     }
-
     setEditConfig({ ...editConfig, [section]: sectionData });
   };
 
+  // Add new config item
+  const addConfigItem = (key: string, valueType: ValueType, value: unknown) => {
+    if (!editConfig || !key.trim()) return;
+
+    const section = activeSection;
+    const sectionData = JSON.parse(JSON.stringify(editConfig[section as keyof ConfigData] || {}));
+
+    let finalValue: unknown = value;
+    if (valueType === 'number') {
+      finalValue = Number(value) || 0;
+    } else if (valueType === 'boolean') {
+      finalValue = value === true || value === 'true';
+    } else if (valueType === 'object') {
+      finalValue = {};
+    } else if (valueType === 'array') {
+      finalValue = [];
+    } else {
+      finalValue = value ?? '';
+    }
+
+    sectionData[key] = finalValue;
+    setEditConfig({ ...editConfig, [section]: sectionData });
+  };
+
+  // Add new provider
+  const addProvider = (providerName: string, apiKey?: string, baseUrl?: string) => {
+    if (!editConfig || !providerName.trim()) return;
+    const providersData = JSON.parse(JSON.stringify(editConfig.providers as Record<string, unknown> || {}));
+    const providerConfig: Record<string, unknown> = { models: {} };
+    if (apiKey?.trim()) providerConfig.api_key = apiKey.trim();
+    if (baseUrl?.trim()) providerConfig.base_url = baseUrl.trim();
+    providersData[providerName] = providerConfig;
+    setEditConfig({ ...editConfig, providers: providersData });
+  };
+
+  // Add model to provider
+  const addModelToProvider = (providerName: string, modelName: string, apiKey?: string, baseUrl?: string, enabled?: boolean) => {
+    if (!editConfig || !modelName.trim()) return;
+    const providersData = JSON.parse(JSON.stringify(editConfig.providers as Record<string, unknown> || {}));
+    const provider = providersData[providerName] as Record<string, unknown> | undefined;
+    if (provider && typeof provider === 'object') {
+      const models = provider.models as Record<string, unknown> || {};
+      const modelConfig: Record<string, unknown> = { enabled: enabled ?? false };
+      if (apiKey?.trim()) modelConfig.api_key = apiKey.trim();
+      if (baseUrl?.trim()) modelConfig.base_url = baseUrl.trim();
+      models[modelName] = modelConfig;
+      provider.models = models;
+    }
+    setEditConfig({ ...editConfig, providers: providersData });
+  };
+
   const sections = [
-    { id: 'agents', label: '代理', description: 'AI 助手配置' },
-    { id: 'channels', label: '频道', description: '通信渠道设置' },
-    { id: 'providers', label: '提供商', description: 'LLM 提供商 API' },
-    { id: 'tools', label: '工具', description: '可用工具配置' },
-    { id: 'gateway', label: '网关', description: '网关服务设置' },
+    { id: 'agents', label: '代理', icon: Cpu },
+    { id: 'channels', label: '频道', icon: MessageCircle },
+    { id: 'providers', label: '提供商', icon: Database },
+    { id: 'tools', label: '工具', icon: Settings },
+    { id: 'gateway', label: '网关', icon: Globe },
   ];
 
-  // Get provider groups for providers section
   const getProviderGroups = (): ProviderGroup[] => {
     if (!editConfig || activeSection !== 'providers') return [];
     const providersData = editConfig.providers as Record<string, unknown> || {};
@@ -210,11 +241,9 @@ export default function Config() {
 
     for (const [providerName, providerConfig] of Object.entries(providersData)) {
       if (typeof providerConfig !== 'object' || providerConfig === null) continue;
-
       const config = providerConfig as Record<string, unknown>;
       const models: Array<{ name: string; config: Record<string, unknown> }> = [];
 
-      // Extract models if they exist
       if (config.models && typeof config.models === 'object') {
         const modelsData = config.models as Record<string, unknown>;
         for (const [modelName, modelConfig] of Object.entries(modelsData)) {
@@ -223,12 +252,7 @@ export default function Config() {
           }
         }
       }
-
-      groups.push({
-        name: providerName,
-        config: config,
-        models: models,
-      });
+      groups.push({ name: providerName, config, models });
     }
 
     return groups.filter(group =>
@@ -237,59 +261,39 @@ export default function Config() {
     );
   };
 
-  // Get flattened config items for non-providers sections
   const getConfigItems = (): ConfigItem[] => {
     if (!editConfig || activeSection === 'providers') return [];
     const sectionData = editConfig[activeSection as keyof ConfigData] as Record<string, unknown> || {};
     const items: ConfigItem[] = [];
 
-    const flatten = (obj: Record<string, unknown>, path: string[] = []) => {
-      for (const [key, value] of Object.entries(obj)) {
-        const currentPath = [...path, key];
-        const type = getValueType(value);
+    for (const [key, value] of Object.entries(sectionData)) {
+      const type = getValueType(value);
+      const isObject = type === 'object' && value !== null && !Array.isArray(value);
 
-        if (type === 'object' && value !== null && !Array.isArray(value)) {
-          const nestedObj = value as Record<string, unknown>;
-          // Show enabled field prominently
-          if (nestedObj.enabled !== undefined) {
-            items.push({
-              key: key,
-              path: [...path, key, 'enabled'],
-              value: nestedObj.enabled,
-              type: 'boolean',
-              isSecret: false,
-              section: activeSection,
-              displayKey: [...path, key, 'enabled'].join('.'),
-            });
-          }
-          // Show other fields
-          for (const [subKey, subValue] of Object.entries(nestedObj)) {
-            if (subKey === 'enabled') continue;
-            items.push({
-              key: subKey,
-              path: [...path, key, subKey],
-              value: subValue,
-              type: getValueType(subValue),
-              isSecret: isSecretKey(subKey),
-              section: activeSection,
-              displayKey: [...path, key, subKey].join('.'),
-            });
-          }
-        } else {
-          items.push({
-            key: key,
-            path: currentPath,
-            value: value,
-            type: type,
-            isSecret: isSecretKey(key),
-            section: activeSection,
-            displayKey: currentPath.join('.'),
-          });
-        }
+      if (isObject) {
+        const nestedObj = value as Record<string, unknown>;
+        items.push({
+          key,
+          path: [key],
+          value: nestedObj,
+          type: 'object',
+          isSecret: false,
+          section: activeSection,
+          displayKey: key,
+          parentKey: key,
+        });
+      } else {
+        items.push({
+          key,
+          path: [key],
+          value,
+          type,
+          isSecret: isSecretKey(key),
+          section: activeSection,
+          displayKey: key,
+        });
       }
-    };
-
-    flatten(sectionData);
+    }
 
     return items.filter(item =>
       item.displayKey.toLowerCase().includes(searchQuery.toLowerCase())
@@ -311,7 +315,6 @@ export default function Config() {
     });
   };
 
-  // Value editor component for modal
   const ValueEditor = ({ item, onClose }: { item: ConfigItem; onClose: () => void }) => {
     const [editValue, setEditValue] = useState<string>('');
 
@@ -347,18 +350,16 @@ export default function Config() {
 
     return (
       <div className="space-y-4">
-        {/* Header */}
-        <div className="flex items-center gap-3 pb-4 border-b border-border/50">
-          <div className="rounded-md border border-border bg-muted/50 p-2">
-            {createElement(getConfigIcon(item.section, item.key), { className: "h-4 w-4 text-muted-foreground" })}
+        <div className="flex items-center gap-3 pb-4 border-b border-border">
+          <div className="rounded-lg border border-border bg-muted/50 p-2">
+            {createElement(getConfigIcon(item.section, item.key), { className: "h-5 w-5 text-muted-foreground" })}
           </div>
           <div className="flex-1">
-            <h3 className="font-semibold">{formatKeyLabel(item.path[item.path.length - 1])}</h3>
-            <p className="text-xs text-muted-foreground font-mono">{item.displayKey}</p>
+            <h3 className="font-semibold text-lg">{formatKeyLabel(item.path[item.path.length - 1])}</h3>
+            <p className="text-sm text-muted-foreground font-mono">{item.displayKey}</p>
           </div>
         </div>
 
-        {/* Type Badge */}
         <div className="flex items-center gap-2">
           <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
             类型: {item.type}
@@ -371,24 +372,23 @@ export default function Config() {
           )}
         </div>
 
-        {/* Editor */}
         <div className="space-y-2">
           {item.type === 'boolean' ? (
-            <label className="flex items-center gap-3 cursor-pointer p-4 border border-border/50 rounded-lg hover:bg-muted/30 transition-colors">
+            <label className="flex items-center gap-3 cursor-pointer p-4 border border-border rounded-lg hover:bg-muted/50 transition-colors">
               <input
                 type="checkbox"
                 checked={editValue === 'true'}
                 onChange={(e) => setEditValue(e.target.checked ? 'true' : 'false')}
                 className="w-5 h-5 rounded"
               />
-              <span className="text-sm">{editValue === 'true' ? '启用' : '禁用'}</span>
+              <span className="text-sm font-medium">{editValue === 'true' ? '启用' : '禁用'}</span>
             </label>
           ) : item.type === 'number' ? (
             <input
               type="number"
               value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
-              className="input w-full"
+              className="input w-full h-11"
             />
           ) : (
             <div className="relative">
@@ -397,14 +397,14 @@ export default function Config() {
                   type="password"
                   value={editValue}
                   onChange={(e) => setEditValue(e.target.value)}
-                  className="input w-full font-mono"
+                  className="input w-full h-11 font-mono"
                   placeholder="••••••••"
                 />
               ) : (
                 <textarea
                   value={editValue}
                   onChange={(e) => setEditValue(e.target.value)}
-                  className="input w-full min-h-[200px] font-mono text-sm resize-y"
+                  className="input w-full min-h-[150px] font-mono text-sm resize-y"
                   placeholder="输入值..."
                 />
               )}
@@ -426,9 +426,8 @@ export default function Config() {
           )}
         </div>
 
-        {/* Current value preview for complex types */}
         {(item.type === 'object' || item.type === 'array') && (
-          <div className="p-3 bg-muted/30 rounded-lg border border-border/50">
+          <div className="p-3 bg-muted/30 rounded-lg border border-border">
             <div className="text-xs text-muted-foreground mb-2">当前值预览:</div>
             <pre className="text-xs font-mono overflow-x-auto max-h-40">
               {JSON.stringify(item.value, null, 2)}
@@ -436,15 +435,368 @@ export default function Config() {
           </div>
         )}
 
-        {/* Actions */}
-        <div className="flex gap-2 pt-4 border-t border-border/50">
-          <button onClick={handleSave} className="btn btn-primary flex-1">
+        <div className="flex gap-2 pt-2">
+          <button onClick={handleSave} className="btn btn-primary flex-1 h-10">
             <Save className="h-4 w-4" />
-            保存更改
+            保存
           </button>
-          <button onClick={onClose} className="btn btn-secondary flex-1">
+          <button onClick={onClose} className="btn btn-secondary flex-1 h-10">
             取消
           </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Add Config Modal
+  const AddConfigModal = () => {
+    const [key, setKey] = useState('');
+    const [valueType, setValueType] = useState<ValueType>('string');
+    const [value, setValue] = useState('');
+
+    const handleAdd = () => {
+      if (!key.trim()) {
+        alert('请输入配置键名');
+        return;
+      }
+      addConfigItem(key, valueType, value);
+      setShowAddModal(false);
+      setKey('');
+      setValue('');
+      setValueType('string');
+    };
+
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+        onClick={() => setShowAddModal(false)}
+      >
+        <div
+          className="bg-card rounded-xl border border-border shadow-xl w-full max-w-md overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+            <span className="font-medium">添加配置项</span>
+            <button onClick={() => setShowAddModal(false)} className="icon-btn">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1.5">配置键名</label>
+              <input
+                type="text"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                placeholder="例如: api_key"
+                className="input w-full h-10"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1.5">值类型</label>
+              <select
+                value={valueType}
+                onChange={(e) => setValueType(e.target.value as ValueType)}
+                className="input w-full h-10"
+              >
+                <option value="string">字符串</option>
+                <option value="number">数字</option>
+                <option value="boolean">布尔值</option>
+                <option value="object">对象</option>
+                <option value="array">数组</option>
+              </select>
+            </div>
+
+            {valueType === 'boolean' ? (
+              <div>
+                <label className="block text-sm font-medium mb-1.5">值</label>
+                <select
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  className="input w-full h-10"
+                >
+                  <option value="true">启用</option>
+                  <option value="false">禁用</option>
+                </select>
+              </div>
+            ) : valueType === 'object' || valueType === 'array' ? (
+              <div className="text-sm text-muted-foreground">
+                将创建一个空的{valueType === 'object' ? '对象' : '数组'}，您可以之后编辑它
+              </div>
+            ) : (
+              <div>
+                <label className="block text-sm font-medium mb-1.5">值</label>
+                <input
+                  type={valueType === 'number' ? 'number' : 'text'}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  placeholder="输入值..."
+                  className="input w-full h-10"
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2 px-5 pb-5">
+            <button onClick={handleAdd} className="btn btn-primary flex-1 h-10">
+              <Plus className="h-4 w-4" />
+              添加
+            </button>
+            <button onClick={() => setShowAddModal(false)} className="btn btn-secondary flex-1 h-10">
+              取消
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Add Provider Modal
+  const AddProviderModal = () => {
+    const [providerName, setProviderName] = useState('');
+    const [selectedProvider, setSelectedProvider] = useState<string | null>(addModelProvider);
+    const [providerApiKey, setProviderApiKey] = useState('');
+    const [providerBaseUrl, setProviderBaseUrl] = useState('');
+    const [modelName, setModelName] = useState('');
+    const [modelApiKey, setModelApiKey] = useState('');
+    const [modelBaseUrl, setModelBaseUrl] = useState('');
+    const [modelEnabled, setModelEnabled] = useState(true);
+    const [step, setStep] = useState<'provider' | 'model'>(addModelProvider ? 'model' : 'provider');
+
+    const commonProviders = [
+      { name: 'anthropic', label: 'Anthropic (Claude)' },
+      { name: 'openai', label: 'OpenAI (GPT)' },
+      { name: 'ollama', label: 'Ollama (本地)' },
+      { name: 'deepseek', label: 'DeepSeek' },
+      { name: 'glm', label: '智谱 GLM' },
+      { name: 'qwen', label: '通义千问' },
+    ];
+
+    const handleAddProvider = () => {
+      const name = selectedProvider || providerName;
+      if (!name.trim()) {
+        alert('请输入或选择提供商名称');
+        return;
+      }
+      addProvider(name, providerApiKey, providerBaseUrl);
+      setSelectedProvider(name);
+      setStep('model');
+    };
+
+    const handleClose = () => {
+      setShowAddModal(false);
+      setAddModelProvider(null);
+      setProviderName('');
+      setSelectedProvider(null);
+      setProviderApiKey('');
+      setProviderBaseUrl('');
+      setModelName('');
+      setModelApiKey('');
+      setModelBaseUrl('');
+      setModelEnabled(true);
+      setStep('provider');
+    };
+
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+        onClick={handleClose}
+      >
+        <div
+          className="bg-card rounded-xl border border-border shadow-xl w-full max-w-md overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+            <span className="font-medium">
+              {step === 'provider' ? '添加提供商' : `添加模型到 ${selectedProvider}`}
+            </span>
+            <button onClick={handleClose} className="icon-btn">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4">
+            {step === 'provider' ? (
+              <>
+                <div>
+                  <label className="block text-sm font-medium mb-2">选择常用提供商</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {commonProviders.map((p) => (
+                      <button
+                        key={p.name}
+                        onClick={() => setSelectedProvider(p.name)}
+                        className={`p-3 rounded-lg border text-left text-sm transition-colors ${
+                          selectedProvider === p.name
+                            ? 'bg-primary text-primary-foreground border-primary'
+                            : 'bg-card border-border hover:bg-muted/50'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-border"></div>
+                  </div>
+                  <div className="relative flex justify-center text-sm">
+                    <span className="px-2 bg-card text-muted-foreground">或输入自定义名称</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">提供商名称</label>
+                  <input
+                    type="text"
+                    value={providerName}
+                    onChange={(e) => {
+                      setProviderName(e.target.value);
+                      setSelectedProvider(null);
+                    }}
+                    placeholder="例如: my_provider"
+                    className="input w-full h-10"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">API Key</label>
+                  <input
+                    type="password"
+                    value={providerApiKey}
+                    onChange={(e) => setProviderApiKey(e.target.value)}
+                    placeholder="sk-ant-xxx 或 sk-xxx"
+                    className="input w-full h-10 font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    可选，该提供商下的模型都会使用此配置
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">Base URL</label>
+                  <input
+                    type="text"
+                    value={providerBaseUrl}
+                    onChange={(e) => setProviderBaseUrl(e.target.value)}
+                    placeholder="例如: https://api.anthropic.com"
+                    className="input w-full h-10 font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    可选，自定义 API 端点
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="p-3 bg-muted/30 rounded-lg">
+                  <p className="text-sm">
+                    提供商: <span className="font-medium">{selectedProvider}</span>
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">模型名称 *</label>
+                  <input
+                    type="text"
+                    value={modelName}
+                    onChange={(e) => setModelName(e.target.value)}
+                    placeholder="例如: claude-3-5-sonnet-20241022"
+                    className="input w-full h-10"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    输入模型的标识符
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">API Key</label>
+                  <input
+                    type="password"
+                    value={modelApiKey}
+                    onChange={(e) => setModelApiKey(e.target.value)}
+                    placeholder="sk-ant-xxx 或 sk-xxx"
+                    className="input w-full h-10 font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    可选，留空则使用提供商级别的配置
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">Base URL</label>
+                  <input
+                    type="text"
+                    value={modelBaseUrl}
+                    onChange={(e) => setModelBaseUrl(e.target.value)}
+                    placeholder="例如: https://api.anthropic.com"
+                    className="input w-full h-10 font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    可选，用于自定义 API 端点
+                  </p>
+                </div>
+
+                <label className="flex items-center gap-3 cursor-pointer p-3 border border-border rounded-lg hover:bg-muted/50 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={modelEnabled}
+                    onChange={(e) => setModelEnabled(e.target.checked)}
+                    className="w-4 h-4 rounded"
+                  />
+                  <span className="text-sm font-medium">启用此模型</span>
+                </label>
+              </>
+            )}
+          </div>
+
+          <div className="flex gap-2 px-5 pb-5">
+            {step === 'provider' ? (
+              <>
+                <button onClick={handleAddProvider} className="btn btn-primary flex-1 h-10">
+                  <Plus className="h-4 w-4" />
+                  添加提供商
+                </button>
+                <button onClick={handleClose} className="btn btn-secondary h-10 px-4">
+                  取消
+                </button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => {
+                  if (!modelName.trim()) {
+                    alert('请输入模型名称');
+                    return;
+                  }
+                  addModelToProvider(selectedProvider!, modelName, modelApiKey, modelBaseUrl, modelEnabled);
+                  setModelName('');
+                  setModelApiKey('');
+                  setModelBaseUrl('');
+                  setModelEnabled(true);
+                  // Keep modal open to add more models
+                }} className="btn btn-primary flex-1 h-10">
+                  <Plus className="h-4 w-4" />
+                  添加模型
+                </button>
+                <button
+                  onClick={() => {
+                    setStep('provider');
+                    setSelectedProvider(null);
+                    setModelName('');
+                    setModelApiKey('');
+                    setModelBaseUrl('');
+                    setModelEnabled(true);
+                  }}
+                  className="btn btn-secondary h-10 px-4"
+                >
+                  返回
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -454,7 +806,7 @@ export default function Config() {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="flex items-center gap-3">
-          <div className="h-4 w-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+          <div className="h-5 w-5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
           <span className="text-sm text-muted-foreground">加载中...</span>
         </div>
       </div>
@@ -462,24 +814,24 @@ export default function Config() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight">配置</h2>
+          <h1 className="text-2xl font-semibold">配置</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            管理 nanobot 设置 · 共 {activeSection === 'providers' ? providerGroups.length : configItems.length} 项配置
+            管理 nanobot 设置
           </p>
         </div>
-        <div className="flex gap-2">
-          <button onClick={handleReload} className="btn btn-outline">
+        <div className="flex items-center gap-2">
+          <button onClick={handleReload} className="btn btn-outline h-9">
             <RefreshCw className="h-4 w-4" />
-            <span className="hidden sm:inline">重新加载</span>
+            重新加载
           </button>
           <button
             onClick={handleSave}
             disabled={saving || !hasChanges}
-            className="btn btn-primary"
+            className="btn btn-primary h-9"
           >
             <Save className="h-4 w-4" />
             {saving ? '保存中...' : '保存'}
@@ -491,114 +843,132 @@ export default function Config() {
       {hasChanges && (
         <div className="alert alert-warning">
           <AlertTriangle className="h-4 w-4" />
-          有未保存的配置更改，请记得保存
+          有未保存的配置更改
         </div>
       )}
 
-      {/* Section Tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2">
-        {sections.map((section) => {
-          const SectionIcon = SECTION_ICONS[section.id] || Settings;
-          const sectionData = editConfig?.[section.id as keyof ConfigData] as Record<string, unknown> || {};
-          const itemCount = Object.keys(sectionData).length;
+      {/* Section Sidebar + Content */}
+      <div className="flex gap-6">
+        {/* Sidebar */}
+        <aside className="w-48 flex-shrink-0">
+          <nav className="space-y-1">
+            {sections.map((section) => {
+              const SectionIcon = section.icon;
+              const isActive = activeSection === section.id;
 
-          return (
-            <button
-              key={section.id}
-              onClick={() => {
-                if (hasChanges && !confirm('切换配置区域将丢失未保存的更改，确定继续吗？')) {
-                  return;
-                }
-                setActiveSection(section.id);
-                setSearchQuery('');
-              }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-all whitespace-nowrap ${
-                activeSection === section.id
-                  ? 'bg-primary text-primary-foreground border-primary'
-                  : 'bg-card hover:bg-muted/50 border-border/50'
-              }`}
-            >
-              <SectionIcon className="h-4 w-4" />
-              <span className="text-sm font-medium">{section.label}</span>
-              <span className={`text-xs px-1.5 py-0.5 rounded ${
-                activeSection === section.id
-                  ? 'bg-primary-foreground/20'
-                  : 'bg-muted'
-              }`}>
-                {itemCount}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+              return (
+                <button
+                  key={section.id}
+                  onClick={() => {
+                    if (hasChanges && !confirm('切换区域将丢失未保存的更改，确定继续吗？')) {
+                      return;
+                    }
+                    setActiveSection(section.id);
+                    setSearchQuery('');
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    isActive
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  <SectionIcon className="h-4 w-4 flex-shrink-0" />
+                  <span>{section.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
 
-      {/* Search Bar */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-        <input
-          type="text"
-          placeholder={`搜索${sections.find(s => s.id === activeSection)?.label}配置...`}
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="input h-10 pl-9"
-        />
-      </div>
-
-      {/* Providers Section - Grouped by provider */}
-      {activeSection === 'providers' && (
-        <>
-          {providerGroups.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <Database className="h-12 w-12 text-muted-foreground/50 mb-4" />
-              <p className="text-muted-foreground">
-                {searchQuery ? '未找到匹配的提供商' : '暂无提供商配置'}
-              </p>
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          {/* Search & Add Bar */}
+          <div className="flex gap-2 mb-4">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="搜索配置..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="input h-10 pl-9 w-full"
+              />
             </div>
-          ) : (
-            <div className="space-y-4">
-              {providerGroups.map((group, index) => {
-                const isExpanded = expandedProviders.has(group.name);
-                const enabledModels = group.models.filter(m => m.config.enabled === true).length;
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="btn btn-primary h-10 px-4"
+            >
+              <Plus className="h-4 w-4" />
+              <span className="hidden sm:inline">添加</span>
+            </button>
+          </div>
 
-                return (
-                  <div
-                    key={group.name}
-                    className="card-elevated rounded-xl overflow-hidden scale-in"
-                    style={{ animationDelay: `${index * 30}ms` }}
+          {/* Providers Section */}
+          {activeSection === 'providers' && (
+            <div className="space-y-3">
+              {providerGroups.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <Database className="h-10 w-10 mx-auto mb-3 opacity-50" />
+                  <p className="mb-4">{searchQuery ? '未找到匹配的提供商' : '暂无提供商配置'}</p>
+                  <button
+                    onClick={() => setShowAddModal(true)}
+                    className="btn btn-outline"
                   >
-                    {/* Provider Header */}
-                    <button
-                      onClick={() => toggleProviderExpanded(group.name)}
-                      className="w-full flex items-center justify-between px-5 py-4 hover:bg-muted/30 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="rounded-md border border-border bg-muted/50 p-2">
-                          <Database className="h-5 w-5 text-muted-foreground" />
-                        </div>
-                        <div className="text-left">
-                          <h3 className="font-semibold capitalize">{formatKeyLabel(group.name)}</h3>
-                          <p className="text-xs text-muted-foreground">
-                            {group.models.length} 个模型 · {enabledModels} 个已启用
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground font-mono">{group.name}</span>
-                        {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                      </div>
-                    </button>
+                    <Plus className="h-4 w-4" />
+                    添加提供商
+                  </button>
+                </div>
+              ) : (
+                providerGroups.map((group) => {
+                  const isExpanded = expandedProviders.has(group.name);
+                  const enabledModels = group.models.filter(m => m.config.enabled === true).length;
 
-                    {/* Provider Models */}
-                    {isExpanded && (
-                      <div className="border-t border-border/50 p-4">
-                        {group.models.length === 0 ? (
-                          <p className="text-center text-sm text-muted-foreground py-4">
-                            此提供商暂无模型配置
-                          </p>
-                        ) : (
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            {group.models.map((model) => {
+                  return (
+                    <div key={group.name} className="card-elevated rounded-lg overflow-hidden">
+                      <button
+                        onClick={() => toggleProviderExpanded(group.name)}
+                        className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/50 transition-colors"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Database className="h-5 w-5 text-muted-foreground" />
+                          <div className="text-left">
+                            <div className="font-medium capitalize">{formatKeyLabel(group.name)}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {group.models.length} 个模型 · {enabledModels} 个已启用
+                            </div>
+                          </div>
+                        </div>
+                        <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                      </button>
+
+                      {isExpanded && (
+                        <div className="border-t border-border p-3 space-y-2">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs text-muted-foreground">模型列表</span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAddModelProvider(group.name);
+                                setShowAddModal(true);
+                              }}
+                              className="text-xs btn btn-ghost h-7 px-2"
+                            >
+                              <Plus className="h-3 w-3 mr-1" />
+                              添加模型
+                            </button>
+                          </div>
+                          {group.models.length === 0 ? (
+                            <p className="text-center text-sm text-muted-foreground py-2">
+                              此提供商暂无模型配置
+                            </p>
+                          ) : (
+                            group.models.map((model) => {
                               const isEnabled = model.config.enabled === true;
+                              const otherConfig = Object.entries(model.config)
+                                .filter(([k]) => k !== 'enabled')
+                                .map(([k, v]) => `${k}: ${getValuePreview(v, 15)}`)
+                                .join(' · ');
+
                               return (
                                 <div
                                   key={model.name}
@@ -610,142 +980,115 @@ export default function Config() {
                                     isSecret: false,
                                     section: 'providers',
                                     displayKey: `${group.name}.models.${model.name}.enabled`,
-                                    providerName: group.name,
-                                    modelName: model.name,
                                   })}
-                                  className={`p-3 rounded-lg border cursor-pointer transition-all hover:border-primary/50 ${
+                                  className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors ${
                                     isEnabled
-                                      ? 'bg-green-500/5 border-green-500/30'
-                                      : 'bg-muted/30 border-border/50'
+                                      ? 'bg-green-500/5 border-green-500/30 hover:border-green-500/50'
+                                      : 'bg-muted/30 border-border hover:border-border'
                                   }`}
                                 >
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2">
-                                        <h4 className="font-medium text-sm truncate">{model.name}</h4>
-                                        <span className={`status-badge ${isEnabled ? 'status-badge-online' : 'status-badge-offline'}`}>
-                                          {isEnabled ? '已启用' : '已禁用'}
-                                        </span>
-                                      </div>
-                                      <p className="text-xs text-muted-foreground mt-1 truncate">
-                                        {Object.entries(model.config)
-                                          .filter(([k]) => k !== 'enabled')
-                                          .map(([k, v]) => `${k}: ${getValuePreview(v, 20)}`)
-                                          .join(' · ') || '无其他配置'}
-                                      </p>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium text-sm">{model.name}</span>
+                                      <span className={`status-badge ${isEnabled ? 'status-badge-online' : 'status-badge-offline'}`}>
+                                        {isEnabled ? '已启用' : '已禁用'}
+                                      </span>
                                     </div>
-                                    <Cpu className={`h-4 w-4 ${isEnabled ? 'text-green-500' : 'text-muted-foreground'}`} />
+                                    {otherConfig && (
+                                      <p className="text-xs text-muted-foreground mt-1 truncate">{otherConfig}</p>
+                                    )}
                                   </div>
+                                  <Cpu className={`h-4 w-4 flex-shrink-0 ml-2 ${isEnabled ? 'text-green-500' : 'text-muted-foreground'}`} />
                                 </div>
                               );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Non-providers sections - Flattened cards */}
-      {activeSection !== 'providers' && (
-        <>
-          {configItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <Settings className="h-12 w-12 text-muted-foreground/50 mb-4" />
-              <p className="text-muted-foreground">
-                {searchQuery ? '未找到匹配的配置项' : '此配置区域为空'}
-              </p>
-            </div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {configItems.map((item, index) => {
-                const Icon = getConfigIcon(item.section, item.key);
-                const isBoolean = item.type === 'boolean';
-
-                return (
-                  <div
-                    key={item.displayKey}
-                    onClick={() => setSelectedItem(item)}
-                    className={`scale-in card-elevated group p-4 cursor-pointer ${
-                      item.isSecret ? 'border-orange-500/30' : ''
-                    } ${isBoolean && item.value ? 'border-green-500/30 bg-green-500/5' : ''}`}
-                    style={{ animationDelay: `${index * 25}ms` }}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className={`rounded-md border p-2 group-hover:border-primary/50 transition-all ${
-                        item.isSecret
-                          ? 'bg-orange-500/5 border-orange-500/30 group-hover:bg-orange-500/10'
-                          : isBoolean && item.value
-                          ? 'bg-green-500/10 border-green-500/30'
-                          : 'bg-muted/50 border-border group-hover:bg-primary/10'
-                      }`}>
-                        <Icon className={`h-4 w-4 ${
-                          item.isSecret
-                            ? 'text-orange-500'
-                            : isBoolean && item.value
-                            ? 'text-green-500'
-                            : 'text-muted-foreground'
-                        } group-hover:text-primary transition-colors`} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-medium text-sm truncate">{formatKeyLabel(item.key)}</h3>
-                          {item.isSecret && <Lock className="h-3 w-3 text-orange-500 flex-shrink-0" />}
-                          {isBoolean && (
-                            <span className={`status-badge ${item.value ? 'status-badge-online' : 'status-badge-offline'}`}>
-                              {item.value ? '已启用' : '已禁用'}
-                            </span>
+                            })
                           )}
                         </div>
-                        <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{item.displayKey}</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 flex items-center gap-1.5 text-xs flex-wrap">
-                      {!isBoolean && (
-                        <span className={`px-2 py-0.5 rounded-full ${
-                          item.type === 'array'
-                            ? 'bg-purple-500/10 text-purple-600'
-                            : item.type === 'object'
-                            ? 'bg-orange-500/10 text-orange-600'
-                            : 'bg-blue-500/10 text-blue-600'
-                        }`}>
-                          {item.type}
-                        </span>
                       )}
-                      <span className="text-muted-foreground flex-1 truncate">
-                        {item.isSecret ? '••••••••' : getValuePreview(item.value, 30)}
-                      </span>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           )}
-        </>
-      )}
+
+          {/* Non-providers Sections */}
+          {activeSection !== 'providers' && (
+            <div className="space-y-2">
+              {configItems.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <Settings className="h-10 w-10 mx-auto mb-3 opacity-50" />
+                  <p className="mb-4">{searchQuery ? '未找到匹配的配置项' : '此配置区域为空'}</p>
+                  <button
+                    onClick={() => setShowAddModal(true)}
+                    className="btn btn-outline"
+                  >
+                    <Plus className="h-4 w-4" />
+                    添加配置项
+                  </button>
+                </div>
+              ) : (
+                configItems.map((item) => {
+                  const Icon = getConfigIcon(item.section, item.key);
+                  const isObject = item.type === 'object';
+
+                  return (
+                    <div
+                      key={item.displayKey}
+                      onClick={() => setSelectedItem(item)}
+                      className={`card-elevated rounded-lg p-4 cursor-pointer transition-all hover:border-primary/50 ${
+                        item.isSecret ? 'border-orange-500/30' : ''
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className={`rounded-lg border p-2 ${
+                          item.isSecret
+                            ? 'bg-orange-500/5 border-orange-500/30'
+                            : 'bg-muted/50 border-border'
+                        }`}>
+                          <Icon className={`h-4 w-4 ${item.isSecret ? 'text-orange-500' : 'text-muted-foreground'}`} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-medium text-sm">{formatKeyLabel(item.key)}</h3>
+                            {item.isSecret && <Lock className="h-3 w-3 text-orange-500" />}
+                            <span className="text-xs text-muted-foreground font-mono bg-muted/50 px-1.5 py-0.5 rounded">
+                              {item.type}
+                            </span>
+                          </div>
+                          {isObject ? (
+                            <div className="mt-2 text-xs text-muted-foreground">
+                              {Object.keys(item.value as Record<string, unknown>).length} 个子项
+                            </div>
+                          ) : (
+                            <p className="mt-1 text-sm text-muted-foreground truncate">
+                              {item.isSecret ? '••••••••' : getValuePreview(item.value)}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Detail Modal */}
       {selectedItem && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm fade-in"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
           onClick={() => setSelectedItem(null)}
         >
           <div
-            className="bg-card rounded-xl border border-border shadow-xl w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col scale-in"
+            className="bg-card rounded-xl border border-border shadow-xl w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border/50">
-              <div className="text-sm text-muted-foreground">编辑配置</div>
-              <button
-                onClick={() => setSelectedItem(null)}
-                className="icon-btn"
-              >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <span className="font-medium">编辑配置</span>
+              <button onClick={() => setSelectedItem(null)} className="icon-btn">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -754,7 +1097,7 @@ export default function Config() {
               <ValueEditor item={selectedItem} onClose={() => setSelectedItem(null)} />
             </div>
 
-            <div className="px-5 py-3 border-t border-border/50 bg-muted/20">
+            <div className="px-5 py-3 border-t border-border bg-muted/20 flex gap-2">
               <button
                 onClick={() => {
                   if (confirm(`确定删除配置项 "${selectedItem.displayKey}"?`)) {
@@ -762,14 +1105,19 @@ export default function Config() {
                     setSelectedItem(null);
                   }
                 }}
-                className="btn btn-outline text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 w-full"
+                className="btn btn-outline text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 flex-1 h-9"
               >
                 <Trash2 className="h-4 w-4" />
-                删除此配置项
+                删除
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Add Modal */}
+      {showAddModal && (
+        activeSection === 'providers' ? <AddProviderModal /> : <AddConfigModal />
       )}
     </div>
   );

@@ -354,6 +354,7 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        sandbox_config=config.tools.sandbox if hasattr(config.tools, 'sandbox') else None,
     )
 
     # Set cron callback (needs agent)
@@ -547,6 +548,7 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        sandbox_config=config.tools.sandbox if hasattr(config.tools, 'sandbox') else None,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -1009,6 +1011,14 @@ def _login_github_copilot() -> None:
 
 dashboard_app = typer.Typer(help="Manage web dashboard")
 app.add_typer(dashboard_app, name="dashboard")
+
+
+# ============================================================================
+# Evolution Commands
+# ============================================================================
+
+from nanobot.cli.evolution import app as evolution_app
+app.add_typer(evolution_app, name="evolution")
 
 
 @dashboard_app.command("build")
